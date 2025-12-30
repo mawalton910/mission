@@ -1,5 +1,5 @@
 # Guru Games - Mission - POI Story System
-**Current Version**: POIStory v25.8.2
+**Current Version**: POIStory v25.8.3
 
 A location-based mission tracking system built on the M5Stack Dial (ESP32-S3) for immersive story-driven gameplay in live-action role-playing events.
 
@@ -123,5 +123,5 @@ Built with M5Stack Dial hardware, ESP32-S3 platform, and the Arduino framework.
 
 ---
 
-**Current Version**: POIStory v25.8.2
+**Current Version**: POIStory v25.8.3
 **Last Updated**: December 30, 2025
