@@ -1,4 +1,4 @@
-# Mission M5 - Location-Based Story Mission System
+# Guru Games - Mission - POI Story System
 **Current Version**: POIStory v25.8.2
 
 A location-based mission tracking system built on the M5Stack Dial (ESP32-S3) for immersive story-driven gameplay in live-action role-playing events.
