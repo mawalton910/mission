@@ -1,5 +1,5 @@
 # Mission M5 - POI Story System
-**Current Version**: POIStory v25.7.0
+**Current Version**: POIStory v25.8.1
 
 A location-based mission tracking system built on the M5Stack Dial (ESP32-S3) for immersive story-driven gameplay in live-action role-playing events.
 
@@ -296,7 +296,7 @@ For issues and questions:
 
 ---
 
-**Current Version**: POIStory v25.7.0  
+**Current Version**: POIStory v25.8.1
 **Last Updated**: December 30, 2025  
 **Platform**: ESP32-S3 (Crabik SLot ESP32-S3) with M5Stack Dial  
 **Maintained by**: [Your Organization/Name]
