@@ -28,6 +28,20 @@ bool hexId(const String& value, size_t length) {
   return true;
 }
 bool validName(const String& value) { return value.length() > 0 && value.length() <= 96; }
+// Most event catalogs need only a small JSON pool. A fixed 64 KiB allocation
+// can fail on the ESP32-S3 even with plenty of total free (fragmented) heap.
+// Grow only when the parsed document actually needs it, keeping the same cap.
+DeserializationError readConfigurationJson(DynamicJsonDocument& doc, const String& json) {
+  for (size_t capacity = 4096; capacity <= 65536; capacity *= 2) {
+    DynamicJsonDocument candidate(capacity);
+    DeserializationError error = deserializeJson(candidate, json.c_str(), json.length());
+    if (error != DeserializationError::NoMemory || capacity == 65536) {
+      doc = std::move(candidate);
+      return error;
+    }
+  }
+  return DeserializationError::NoMemory;
+}
 #ifndef MISSION_CONFIG_HOST_TEST
 String urlEncode(const String& value) {
   String result;
@@ -81,8 +95,8 @@ bool GameConfiguration::parse(const String& json, const String& expectedGame) {
   valid = false;
   lastError = "Invalid game configuration";
   if (json.length() > MAX_GAME_CONFIG_BYTES) return false;
-  DynamicJsonDocument doc(65536);
-  if (deserializeJson(doc, json.c_str()) || doc.overflowed()) return false;
+  DynamicJsonDocument doc(0);
+  if (readConfigurationJson(doc, json) || doc.overflowed()) return false;
   String returnedGame = doc["game"]["id"] | "";
   String returnedName = doc["game"]["name"] | "";
   String returnedRevision = doc["revision"] | "";
@@ -205,6 +219,11 @@ bool GameConfiguration::clear() {
 
 #ifndef MISSION_CONFIG_HOST_TEST
 bool GameConfiguration::requestAction(const char* action, JsonObjectConst actionPayload, String& responseBody) {
+  String body;
+  int status = 0;
+  // Keep only the bounded response after the request. Even stopped TLS clients,
+  // HTTP headers and the signed request can fragment the small ESP32-S3 heap.
+  {
   String endpoint = STORY_ROUND_ENDPOINT;
   int slash = endpoint.indexOf('/', 8);
   if (!endpoint.startsWith("https://") || slash < 0) { lastError = "HTTPS server required"; return false; }
@@ -224,8 +243,7 @@ bool GameConfiguration::requestAction(const char* action, JsonObjectConst action
   String challengeUrl = base + "/challenge?mac_address=" + urlEncode(DEVICE_MAC_ADDR) + "&serial_number=" + urlEncode(DEVICE_SERIAL_NUM);
   lastError = "Device connection failed";
   if (!http.begin(tls, challengeUrl)) return false;
-  int status = http.GET();
-  String body;
+  status = http.GET();
   bool received = status == 200 && response(http, body, 2048);
   http.end();
   if (!received) { lastError = "Device challenge failed: " + String(status); return false; }
@@ -252,10 +270,19 @@ bool GameConfiguration::requestAction(const char* action, JsonObjectConst action
   received = status > 0 && response(http, body, MAX_GAME_CONFIG_BYTES + 1024);
   http.end();
   if (!received) { lastError = "Config download failed: " + String(status); return false; }
+  } // Destroy TLS, HTTP and signing buffers before allocating the JSON pool.
 
   {
-    DynamicJsonDocument result(65536);
-    if (deserializeJson(result, body) || result.overflowed()) { lastError = "Invalid server response"; return false; }
+    DynamicJsonDocument result(0);
+    DeserializationError jsonError = readConfigurationJson(result, body);
+    if (jsonError || result.overflowed()) {
+      // Report transport/parser metadata only; never log signed requests or credentials.
+      Serial.printf("[CONFIG] Response parse failed: HTTP=%d bytes=%u error=%s overflow=%s heap=%u largest=%u\n",
+                    status, unsigned(body.length()), jsonError.c_str(), result.overflowed() ? "yes" : "no",
+                    unsigned(ESP.getFreeHeap()), unsigned(ESP.getMaxAllocHeap()));
+      lastError = String("Setup response: ") + jsonError.c_str() + " (HTTP " + String(status) + ")";
+      return false;
+    }
     if (status != 200 || !(result["ok"] | false) || !(result["body"]["ok"] | false)) {
       const char* message = result["body"]["message"] | "";
       if (!message[0]) message = result["message"] | "Game setup request failed";
@@ -276,8 +303,8 @@ bool GameConfiguration::download(const String& expectedGame) {
   if (!requestAction("missionGameConfiguration", payload.as<JsonObjectConst>(), body)) return false;
   String configJson;
   {
-    DynamicJsonDocument result(65536);
-    if (deserializeJson(result, body)) return false;
+    DynamicJsonDocument result(0);
+    if (readConfigurationJson(result, body)) return false;
     serializeJson(result["configuration"], configJson);
   }
   body = "";

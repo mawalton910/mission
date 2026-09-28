@@ -14,6 +14,25 @@ const char* reservedGameTagRole(const String& tag) { return tag == "DEADBEEF" ? 
 
 int main(int argc, char** argv) {
   assert(argc == 2);
+  {
+    DynamicJsonDocument small(0);
+    assert(!readConfigurationJson(small, "{\"ok\":true}"));
+    assert(small["ok"].as<bool>());
+    assert(small.capacity() == 4096); // No unconditional 64 KiB heap allocation.
+    String dense = "[0";
+    for (int i = 1; i < 1024; ++i) dense += ",0";
+    dense += "]";
+    DynamicJsonDocument grown(0);
+    assert(!readConfigurationJson(grown, dense));
+    assert(grown.size() == 1024 && grown.capacity() > 4096 && grown.capacity() <= 65536);
+    String excessive = "[0";
+    for (int i = 1; i < 5000; ++i) excessive += ",0";
+    excessive += "]";
+    DynamicJsonDocument bounded(0);
+    assert(readConfigurationJson(bounded, excessive) == DeserializationError::NoMemory);
+    assert(bounded.capacity() == 65536);
+    assert(readConfigurationJson(small, "{\"ok\":") == DeserializationError::IncompleteInput);
+  }
   std::ifstream input(argv[1]); std::ostringstream buffer; buffer << input.rdbuf();
   const String json = buffer.str();
   const String game = "111111111111111111111111";

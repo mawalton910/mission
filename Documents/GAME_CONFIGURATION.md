@@ -7,9 +7,9 @@ Set `DEVICE_GAME_ID` in your ignored `secrets.h`. Assign that provisioned device
 Open **Settings → Missions & meters → Mission dial setup**.
 
 - Set each POI's actual physical tag UUID in its POI editor. The setup panel lists these automatically.
-- Add an **NPC / mission card** with its UUID, name and StoryGiver/StaticGiver contact. Save the setup. A Loot card in the same game may supply this physical UUID; the explicit NPC mapping gives it its mission role without claiming that Loot record.
-- Existing native NPC mission-card links are automatic; do not duplicate them here.
-- Optional **Mission completion cards** finish runs at connected checkpoints. The original NPC card already starts and finishes its mission, so a separate completion card is not required.
+- In the **NPC editor → Profile & visibility → NPC UUID**, enter the contact's physical UUID or use **Scan with relay reader**, then save the NPC. Its name and mission card appear automatically in Mission dial setup; do not enter a second card there. A Loot record in the same game may already use that physical tag; the NPC mapping gives it its mission role without claiming Loot.
+- Existing legacy mission-card aliases are preserved, while new primary NPC cards come from the NPC editor.
+- Optional **Mission completion cards** finish runs at connected checkpoints. Add them in Mission dial setup using the relay-reader scanner or a typed UUID. The original NPC card already starts and finishes its mission, so a separate completion card is not required.
 - Configure the NPC's round POI selection and four **Mission Difficulties** (Easy, Medium, Hard, Extreme), including player/faction inventory templates. These templates supply rewards.
 - Start an active game round before receiving a mission. Boot setup works without an active round; a new assignment needs an active round and four valid POIs.
 
