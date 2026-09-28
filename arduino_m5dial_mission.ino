@@ -70,10 +70,10 @@ const int NUM_WIFI_PRESETS = sizeof(WIFI_PRESETS) / sizeof(WIFI_PRESETS[0]);
 bool isReservedGameTag(const String& uid) {
   if (uid.isEmpty()) return false;
   const String* groups[] = { COMPLETE_TAGS, FULL_RESET_TAGS, RESET_TAG, BADGE_RESET_TAGS,
-    SCRUB_MISSION_TAGS, ADMIN_BADGE_TAGS, MISSION_CARD_TAGS, FREE_ROAM_MISSION_TAGS };
+    SCRUB_MISSION_TAGS, ADMIN_BADGE_TAGS };
   const int sizes[] = { NUM_COMPLETE_TAGS, NUM_FULL_RESET_TAGS, NUM_RESET_TAGS, NUM_BADGE_RESET_TAGS,
-    NUM_SCRUB_MISSION_TAGS, NUM_ADMIN_BADGE_TAGS, NUM_MISSION_CARD_TAGS, NUM_FREE_ROAM_MISSION_TAGS };
-  for (int group = 0; group < 8; ++group) for (int i = 0; i < sizes[group]; ++i)
+    NUM_SCRUB_MISSION_TAGS, NUM_ADMIN_BADGE_TAGS };
+  for (int group = 0; group < 6; ++group) for (int i = 0; i < sizes[group]; ++i)
     if (GameConfiguration::normalizeUid(groups[group][i]) == uid) return true;
   for (int i = 0; i < NUM_WIFI_CONFIG_TAGS; ++i)
     if (GameConfiguration::normalizeUid(WIFI_CONFIG_TAGS[i]) == uid) return true;
@@ -2208,6 +2208,7 @@ public:
       if (!gameConfiguration.clear()) { showGameConfigurationWait(); return; }
       stateManager.clearAll(false);
       stateManager.clearCompletedBadges();
+      logger.clearLog();
       // Reboot into first-run download. Firmware credentials remain provisioned.
       ESP.restart();
       return;
