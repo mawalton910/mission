@@ -47,3 +47,18 @@ Game setup is intentionally immutable between initial download and factory reset
 - On **GAME SETUP NEEDED / PRESS TO RETRY**, read the Serial `[CONFIG]` message: fix the indicated game assignment, tag, device provisioning, Wi-Fi, clock or storage issue, then press the dial button. The Wi-Fi config tag remains usable while setup is blocked.
 
 Do not publish the local `secrets.h` or device-specific compiled binary. The credentials in that file are not part of the source release.
+
+## File audit
+
+| File | Result |
+| --- | --- |
+| `Config.h` | Enables automatic setup. The old POI/resource-tag table is used only when remote setup is explicitly disabled. Device control cards, screen styling, local timing, and hardware options remain here. |
+| `secrets.h` | `DEVICE_GAME_ID` is the event selector. `STORY_NPC_ID` is ignored in remote mode. The faction fallback arrays have no callers. Network settings, endpoint addresses, device authentication and the TLS root certificate remain provisioned locally. |
+| `arduino_m5dial_mission.ino` | Loads or downloads setup before accepting play, binds saved progress to the catalog, optionally selects the widget's story contact, and matches live mission POIs using both database ID and UUID. |
+| `GameConfiguration.h/.cpp` | New validated catalog, RFID/name lookup, bounded authenticated download, persistent cache, recovery and factory-reset handling. |
+| `MissionDeviceAuth.h` | Uses the existing server challenge-proof protocol; credentials are never supplied by the game catalog. |
+| `FreeRoamMission.h/.cpp` | Uses downloaded locations for assignment, scanning and display; supports catalogs up to 128 POIs while retaining the existing mission length. |
+| `StateManager.h/.cpp` | Catalog binding clears incompatible saved mission indices and NPC assignment on game changes. Normal resets retain the catalog binding and venue Wi-Fi. |
+| `Logger.h`, `OTAUpdate.h` | Existing flash initialization/logging and firmware update flow remain. Uploading with Erase All Flash intentionally removes the catalog. |
+| `MissionBase.h`, `MissionModules.h/.cpp`, `SafeCrackMiniGame.h/.cpp` | Mission interface and local hardware/minigame behavior; no additional faction or POI catalog to fetch. Existing local NFC/RGB/safe-crack work is preserved. |
+| `AudioIndex.h`, `Sounds.h`, `GuruLogo.h` | Local audio/art assets, not event configuration. |
