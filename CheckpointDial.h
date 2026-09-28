@@ -25,6 +25,7 @@ class CheckpointDial {
   void checkpoint(const String& tag, const std::function<bool()>& connect, const std::function<void()>& disconnect);
   bool start(const String& tag);
   bool finish(const String& tag);
+  void toggleBadge(const String& tag);
   int visits() const;
   JsonObjectConst tier() const;
   void render();

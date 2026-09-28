@@ -103,10 +103,15 @@ void CheckpointDial::tag(const String& raw, const std::function<bool()>& connect
   if (hasUnpaidRun() && String(saved["npc_uuid"] | "") == tag) npc = true;
   if (npc || completion) { checkpoint(tag, connect, disconnect); return; }
   if (hasUnpaidRun()) {
-    if (frozen || (saved["frozen"] | false)) { show("RETURN TO NPC", "Your earned progress is saved. Scan your NPC to finish."); return; }
+    if (saved["settlement_pending"] | false) { show("RETRY YOUR NPC", "Payment is not confirmed. Crew and stops stay saved until the NPC replies."); return; }
     bool assigned = false;
     for (JsonObjectConst poi : saved["pois"].as<JsonArrayConst>()) if (String(poi["uuid"] | "") == tag) assigned = true;
-    if (!assigned) { show("NOT A MISSION STOP", "Rotate the dial to see your assigned POIs."); return; }
+    if (!assigned) {
+      if (gameConfiguration.findUuid(tag) >= 0) { show("NOT A MISSION STOP", "Rotate the dial to see your assigned POIs."); return; }
+      if (String(saved["roster_policy"] | "starting_crew") != "final_crew") { show("CREW LOCKED", "Finish this older run first. The next run allows helpers to join."); return; }
+      toggleBadge(tag); return;
+    }
+    if (frozen || (saved["frozen"] | false)) { show("RETURN TO NPC", "Your earned progress is saved. Scan your NPC to finish."); return; }
     for (JsonVariantConst previous : saved["visited"].as<JsonArrayConst>()) if (previous.as<String>() == tag) { show("ALREADY VISITED", "This stop is already saved."); return; }
     saved["visited"].as<JsonArray>().add(tag);
     if (!persist()) { saved["visited"].as<JsonArray>().remove(visits() - 1); show("STORAGE ERROR", "Visit was not saved. Scan again."); return; }
@@ -114,28 +119,33 @@ void CheckpointDial::tag(const String& raw, const std::function<bool()>& connect
     show("STOP SAVED", visits() == 4 ? "All four visited. Return to your NPC." : String(visits()) + " of 4 complete", 1400);
     return;
   }
-  if (gameConfiguration.findUuid(tag) >= 0) { show("START AT YOUR NPC", "Scan player badges, then the NPC mission card."); return; }
-  // Until a manifest is accepted there are no earned visits to lose. Changing
-  // the crew may abandon an uncertain empty assignment, never a paid run.
+  if (gameConfiguration.findUuid(tag) >= 0) { show("START AT YOUR NPC", "Scan the NPC mission card to download your stops."); return; }
+  toggleBadge(tag);
+}
+void CheckpointDial::toggleBadge(const String& tag) {
+  // Crew changes are local and durable. The server validates these badges only
+  // when the final roster returns to the connected checkpoint.
   JsonArray roster = saved["roster"].as<JsonArray>();
   for (unsigned i = 0; i < roster.size(); ++i) if (roster[i].as<String>() == tag) {
     String previous; serializeJson(saved, previous);
-    roster.remove(i); saved.remove("request_id"); saved.remove("last_paid");
+    roster.remove(i); saved.remove("last_paid");
+    if (!hasUnpaidRun() && String(saved["requested_roster_policy"] | "") != "final_crew") saved.remove("request_id");
     if (!persist()) { deserializeJson(saved, previous); show("STORAGE ERROR", "Badge was not removed. Try again."); return; }
-    show("PLAYER REMOVED", String(roster.size()) + " badges ready", 1200); return;
+    show("CHECKED OUT", tag + ": no reward. " + String(roster.size()) + " still in", 2200); return;
   }
   if (roster.size() >= 8) { show("CREW FULL", "Up to eight badges can join."); return; }
   String previous; serializeJson(saved, previous);
-  saved.remove("request_id"); saved.remove("last_paid");
+  saved.remove("last_paid");
+  if (!hasUnpaidRun() && String(saved["requested_roster_policy"] | "") != "final_crew") saved.remove("request_id");
   roster.add(tag);
   if (!persist()) { deserializeJson(saved, previous); show("STORAGE ERROR", "Badge was not saved. Try again."); return; }
-  show("BADGE ADDED", String(roster.size()) + " ready. Scan your NPC to start.", 1500);
+  show("CHECKED IN", tag + ": " + String(roster.size()) + " in. Scan again to leave", 2200);
 }
 void CheckpointDial::checkpoint(const String& tag, const std::function<bool()>& connect, const std::function<void()>& disconnect) {
   String source = hasUnpaidRun() ? String(saved["npc_uuid"] | "") : tag;
   if (hasUnpaidRun() && tag != source && !gameConfiguration.isCompletionTag(tag)) { show("RETURN TO YOUR NPC", "Finish at the NPC where this run started."); return; }
-  if (!hasUnpaidRun() && gameConfiguration.isCompletionTag(tag)) { show("NO ACTIVE RUN", "Scan a player badge and an NPC mission card."); return; }
-  if (!saved["roster"].size()) { show("ADD YOUR CREW", "Scan player badges first, then this NPC card."); return; }
+  if (!hasUnpaidRun() && gameConfiguration.isCompletionTag(tag)) { show("NO ACTIVE RUN", "Scan an NPC mission card to start."); return; }
+  if (hasUnpaidRun() && visits() > 0 && !saved["roster"].size()) { show("NO CREW CHECKED IN", "Scan player badges, then this NPC to collect your reward."); return; }
   DialScreen::message("AT THE CHECKPOINT", "Connecting", "Keep the dial here");
   if (!connect()) { disconnect(); show("NO CONNECTION", "Progress is safe. Stay at the checkpoint and scan again."); return; }
   if (hasUnpaidRun() && !finish(tag)) { disconnect(); return; }
@@ -144,15 +154,30 @@ void CheckpointDial::checkpoint(const String& tag, const std::function<bool()>& 
   tick = millis(); lastSave = tick;
 }
 bool CheckpointDial::finish(const String& tag) {
+  // Persist the exact final crew before sending. Never change it while a lost
+  // response might conceal a committed payout.
+  if (!(saved["settlement_pending"] | false)) {
+    saved["settlement_pending"] = true;
+    if (!persist()) { saved.remove("settlement_pending"); show("STORAGE ERROR", "Cannot save the final crew. Scan the NPC again."); return false; }
+  }
   DynamicJsonDocument payload(2048);
   payload["game_id"] = gameId; payload["operation"] = "finish";
   payload["run_id"] = saved["run_id"]; payload["checkpoint_uuid"] = tag;
   payload["visited_uuids"].set(saved["visited"]);
+  if (String(saved["roster_policy"] | "starting_crew") == "final_crew") payload["player_uuids"].set(saved["roster"]);
   String response;
   DialScreen::message("CONFIRMING REWARDS", "Sending saved progress", "Do not leave the checkpoint yet");
   if (!gameConfiguration.requestAction("missionCheckpoint", payload.as<JsonObjectConst>(), response)) { show("PAYMENT NOT CONFIRMED", gameConfiguration.error(), 7000); return false; }
   DynamicJsonDocument receipt(4096);
-  if (deserializeJson(receipt, response) || !(receipt["settled"] | false) || receipt["run_id"].as<String>() != saved["run_id"].as<String>()) { show("RETRY CHECKPOINT", "No payment receipt received. Progress kept."); return false; }
+  if (deserializeJson(receipt, response) || receipt["run_id"].as<String>() != saved["run_id"].as<String>()) { show("RETRY CHECKPOINT", "No payment receipt received. Progress kept."); return false; }
+  if (!(receipt["settled"] | false)) {
+    if (receipt["crew_editable"] | false) {
+      saved.remove("settlement_pending");
+      if (!persist()) { saved["settlement_pending"] = true; show("STORAGE ERROR", "Scan the NPC again before changing the crew."); return false; }
+      show("CHECK YOUR CREW", receipt["message"] | "Scan the rejected badge out, then retry your NPC.", 9000);
+    } else show("RETRY CHECKPOINT", "No payment receipt received. Crew and progress kept.");
+    return false;
+  }
   saved["paid"] = true;
   saved["reward_paid"] = receipt["paid"] | false;
   if (!persist()) { saved["paid"] = false; show("STORAGE ERROR", "Scan again to recover your payment receipt."); return false; }
@@ -163,11 +188,12 @@ bool CheckpointDial::finish(const String& tag) {
 }
 bool CheckpointDial::start(const String& source) {
   // This write follows a durable payment receipt, never an uncertain response.
-  if (!String(saved["request_id"] | "").length() || (saved["paid"] | false)) {
+  if (!String(saved["request_id"] | "").length() || (saved["paid"] | false) || String(saved["npc_uuid"] | "") != source) {
     DynamicJsonDocument next(16384);
     next["game_id"] = gameId; next["roster"].set(saved["roster"]);
     next["last_paid"] = (saved["reward_paid"] | false) || (saved["last_paid"] | false);
     next["npc_uuid"] = source;
+    next["requested_roster_policy"] = "final_crew";
     char requestId[33]; snprintf(requestId, sizeof(requestId), "%08lx%08lx%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random(), (unsigned long)esp_random(), (unsigned long)esp_random());
     next["request_id"] = requestId;
     saved.set(next);
@@ -178,12 +204,14 @@ bool CheckpointDial::start(const String& source) {
   payload["game_id"] = gameId; payload["operation"] = "start";
   payload["request_id"] = saved["request_id"]; payload["npc_uuid"] = saved["npc_uuid"];
   payload["player_uuids"].set(saved["roster"]);
+  payload["roster_policy"] = saved["requested_roster_policy"] | "starting_crew";
   String response;
   DialScreen::message("GETTING YOUR MISSION", "Downloading four POIs", "The field run works offline");
   if (!gameConfiguration.requestAction("missionCheckpoint", payload.as<JsonObjectConst>(), response)) { show((saved["last_paid"] | false) ? "PAID / NEXT RUN" : "MISSION NOT STARTED", gameConfiguration.error(), 8000); return false; }
   DynamicJsonDocument result(16384);
   if (deserializeJson(result, response) || result.overflowed() || !(result["ok"] | false) || result["pois"].size() != 4 || result["run_id"].as<String>().length() != 64) { show("MISSION NOT SAVED", "Invalid assignment. Scan the NPC to retry."); return false; }
   if (result["device"]["resolved_game_id"].as<String>() != gameId) { show("WRONG GAME", "Check the widget assignment in Creator."); return false; }
+  if (String(result["roster_policy"] | "starting_crew") != String(saved["requested_roster_policy"] | "starting_crew")) { show("UPDATE SERVER", "The server does not support this crew flow yet."); return false; }
   // Verify identities, never guess a tag by the displayed POI name.
   for (JsonObject poi : result["pois"].as<JsonArray>()) {
     String uuid = GameConfiguration::normalizeUid(poi["uuid"] | "");
@@ -193,6 +221,7 @@ bool CheckpointDial::start(const String& source) {
   }
   saved["run_id"] = result["run_id"]; saved["pois"].set(result["pois"]);
   saved["tiers"].set(result["tiers"]); saved["players"].set(result["players"]);
+  saved["roster_policy"] = String(result["roster_policy"] | "starting_crew");
   saved["mission_name"] = result["mission"]["name"];
   saved["npc_name"] = result["source"]["npc_name"];
   saved["remaining_ms"] = result["round"]["duration_ms"] | (15UL * 60000UL);
@@ -202,11 +231,11 @@ bool CheckpointDial::start(const String& source) {
   Serial.println("[MISSION] Assignment saved: 4 POIs. Visit offline, then return to " + String(saved["npc_name"] | "your NPC"));
   return true;
 }
-void CheckpointDial::press() { page = page < 4 ? 4 : 0; dirty = true; noticeUntil = 0; }
+void CheckpointDial::press() { page = page < 4 ? 4 : page == 4 ? 5 : 0; dirty = true; noticeUntil = 0; }
 void CheckpointDial::update() {
   unsigned long now = millis();
   long current = M5Dial.Encoder.read();
-  if (abs(current - encoder) >= 2) { page = (page + (current > encoder ? 1 : 4)) % 5; encoder = current; dirty = true; noticeUntil = 0; }
+  if (abs(current - encoder) >= 2) { page = (page + (current > encoder ? 1 : 5)) % 6; encoder = current; dirty = true; noticeUntil = 0; }
   if (hasUnpaidRun() && !frozen && now - tick >= 1000) {
     unsigned long remaining = saved["remaining_ms"] | 0UL, elapsed = now - tick;
     saved["remaining_ms"] = remaining > elapsed ? remaining - elapsed : 0UL;
@@ -222,17 +251,27 @@ void CheckpointDial::render() {
   if (!storageReady) { DialScreen::message("STORAGE ERROR", "Saved data cannot be read.", "See event staff before resetting"); return; }
   if (!hasUnpaidRun()) {
     if (String(saved["request_id"] | "").length()) { DialScreen::message((saved["last_paid"] | false) ? "REWARDS CONFIRMED" : "CREW SAVED", "Scan your NPC to get the next available mission.", "Internet needed only here"); return; }
-    DialScreen::message(gameConfiguration.name(), saved["roster"].size() ? String(saved["roster"].size()) + " badges ready. Scan your NPC." : "Scan your player badge", "Add crew badges, then scan NPC"); return;
+    DialScreen::message(gameConfiguration.name(), "Scan your NPC to start", String(saved["roster"].size()) + " checked in. Players can join or leave anytime."); return;
   }
   uint16_t color = DialScreen::accent();
   String faction = saved["players"][0]["faction_color"] | "";
   if (faction.length() == 7 && faction[0] == '#') { uint32_t rgb = strtoul(faction.c_str() + 1, nullptr, 16); color = M5Dial.Display.color565(rgb >> 16, rgb >> 8, rgb); }
   unsigned long seconds = (saved["remaining_ms"] | 0UL) / 1000;
   char clock[18]; snprintf(clock, sizeof(clock), "%lu:%02lu  OFFLINE", seconds / 60, seconds % 60);
-  DialScreen::base(frozen ? "RETURN TO NPC" : String(clock), color);
+  DialScreen::base((saved["settlement_pending"] | false) ? "RETRY YOUR NPC" : frozen ? "RETURN TO NPC" : String(clock), color);
   JsonObjectConst earned = tier();
   DialScreen::line(String(visits()) + "/4 visited  |  " + String(earned["difficulty"] | "No reward yet"), 65, 1, DialScreen::muted());
-  if (page == 4) {
+  if (page == 5) {
+    DialScreen::line(String(saved["roster"].size()) + " CHECKED IN", 88, 2);
+    for (unsigned i = 0; i < saved["roster"].size(); ++i) {
+      String badge = saved["roster"][i].as<String>();
+      if (badge.length() > 8) badge = badge.substring(badge.length() - 8);
+      int x = i % 2 ? 164 : 76, y = 111 + (i / 2) * 16;
+      M5Dial.Display.setTextSize(1); M5Dial.Display.setTextColor(TFT_WHITE, DialScreen::bg());
+      M5Dial.Display.drawString(badge, x, y);
+    }
+    DialScreen::line((saved["settlement_pending"] | false) ? "Crew saved for payment" : "Scan badge to join / leave", 176, 1, DialScreen::muted());
+  } else if (page == 4) {
     DialScreen::line("EXPECTED REWARD", 89, 1, DialScreen::accent());
     DialScreen::line(earned["difficulty"] | "Visit a POI", 113, 2);
     String preview;
@@ -240,7 +279,7 @@ void CheckpointDial::render() {
     if (rewards.size()) preview = String(rewards[0]["amount"].as<int>()) + " x " + String(rewards[0]["name"] | "item");
     else preview = "Faction rewards only";
     DialScreen::wrap(earned.isNull() ? "Rewards unlock as you visit." : preview, 140, 1, 2);
-    DialScreen::line(String(rewards.size()) + " player / " + String(earned["faction_rewards"].size()) + " faction items", 173, 1, DialScreen::muted());
+    DialScreen::line(String(saved["roster"].size()) + " checked in: full earned tier", 173, 1, DialScreen::muted());
   } else {
     JsonObjectConst poi = saved["pois"][page];
     bool done = false; for (JsonVariantConst tag : saved["visited"].as<JsonArrayConst>()) if (tag.as<String>() == poi["uuid"].as<String>()) done = true;
@@ -251,5 +290,5 @@ void CheckpointDial::render() {
     bool done = false; for (JsonVariantConst tag : saved["visited"].as<JsonArrayConst>()) if (tag.as<String>() == saved["pois"][i]["uuid"].as<String>()) done = true;
     if (done) M5Dial.Display.fillCircle(90 + i * 20, 191, 4, color); else M5Dial.Display.drawCircle(90 + i * 20, 191, 4, DialScreen::muted());
   }
-  DialScreen::line(frozen || visits() == 4 ? "Return to NPC to collect" : "Turn: stops / Push: loot", 212, 1, DialScreen::muted(), 155);
+  DialScreen::line(frozen || visits() == 4 ? "Return to NPC to collect" : "Push: loot / crew / stops", 212, 1, DialScreen::muted(), 155);
 }

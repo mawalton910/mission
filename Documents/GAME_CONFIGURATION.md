@@ -1,4 +1,4 @@
-# Mission dial setup and offline runs (v26.5.0)
+# Mission dial setup and offline runs (v26.5.1)
 
 Set `DEVICE_GAME_ID` in your ignored `secrets.h`. Assign that provisioned device to an enabled widget in the same game. Wi-Fi, device authentication, TLS, hardware options and privileged control cards remain local.
 
@@ -16,11 +16,12 @@ Open **Settings → Missions & meters → Mission dial setup**.
 ## Player flow
 
 1. Boot at venue Wi-Fi. First boot downloads setup; later boots use flash.
-2. Scan player badges (up to eight), then the NPC mission card. Rescan a badge before departure to remove it.
+2. Scan the NPC mission card to start. No player badge is required first. Up to eight players can check in before or during the mission; scan a badge again to check it out. These crew changes work offline and are saved on the dial.
 3. Wait for **Assignment saved: 4 POIs**. The dial saves the assignment/reward manifest and turns Wi-Fi off.
-4. Visit assigned POIs and scan their tags offline. **STOP SAVED** means the visit was persisted. Turn the dial to browse stops; press to preview rewards. One through four unique visits earn Easy through Extreme.
-5. Return to the same NPC and scan its card. The dial submits visits and saves the server's settlement receipt. The highest reached tier pays once; lower tiers do not stack. Player rewards go to the crew; faction rewards go once to the lead player's faction, subject to configured eligibility and limits.
-6. Only after confirmed settlement does it fetch the next available assignment using the same connection. A player can claim once per NPC per round. **PAID / NEXT RUN** may ask you to return next round; it does not mean the completed payment failed.
+4. Visit assigned POIs and scan their tags offline. **STOP SAVED** means the visit was persisted. Turn the dial to browse stops, rewards and the checked-in crew; pressing cycles stops → reward → crew. One through four unique visits earn Easy through Extreme. Helpers can join after earlier stops and receive the same earned tier.
+5. Return to the same NPC and scan its card. Everyone still checked in receives the full earned tier; checked-out players receive nothing. The highest reached tier pays once; lower tiers do not stack. Faction rewards go once to the first remaining crew member's faction, subject to configured eligibility and limits. At least one player must be checked in to collect an earned reward.
+6. The dial saves the exact final crew before submitting payment. A lost connection or receipt freezes crew and stops until the same NPC confirms the result. An explicit **CHECK YOUR CREW** rejection means no payout committed: scan an invalid/ineligible badge out (or have staff fix its game link), then retry the NPC. Offline badge scans are provisional until the server validates them at completion.
+7. Only after confirmed settlement does it fetch the current NPC assignment using the same connection. Checked-in badges carry into that next run and can leave or join normally. A player can still claim only once per NPC per round, even by joining another crew. Already-paid players must check out before another same-round crew can collect, or wait for the next round.
 
 A zero-visit run closes without rewards. A return after round end can settle the original run. Time expiry stops new visits. A reboot preserves visits but freezes further offline progress until return to the NPC, preventing a restarted clock from extending play.
 
@@ -36,7 +37,8 @@ Look for these Serial messages:
 [RFID2] Port A SDA=... SCL=... VersionReg=...
 [Modules] Unit NFC/RFID2 on Port A: ready
 [RFID2:Port A] Card scanned: ...
-[MISSION] BADGE ADDED: ...
+[MISSION] CHECKED IN: ...
+[MISSION] CHECKED OUT: ...
 [MISSION] Assignment saved: 4 POIs. Visit offline, then return to ...
 [MISSION] STOP SAVED: ...
 [MISSION] Settlement confirmed: Easy rewards paid
@@ -55,6 +57,7 @@ Hardware references: [M5Stack RFID2](https://docs.m5stack.com/en/unit/rfid2), [M
 - `FACTORYRESET` and the full-reset card intentionally erase setup/session state and saved Wi-Fi overrides, then reboot. Do not use them with unsettled visits. Compiled credentials remain.
 - Setup has a verified SPIFFS cache. Progress uses two alternating length/CRC-checked SPIFFS files; a torn write recovers the last committed copy. Unreadable storage blocks play.
 - Retries keep the same request/run ID. Backend transactions and unique claim records prevent duplicate settlement. A replacement assignment cannot start before payout confirmation is durable.
+- Runs begun with older firmware retain their original fixed crew through settlement. Flexible check-in starts with the next v26.5.1 assignment; updating firmware cannot silently replace a saved run's recipients.
 - Changed or uncached assignment POI tags are rejected; refresh setup while idle.
 - Remote mode ignores legacy local completion cards and downloads event completion cards from Creator. Admin/reset/OTA/Wi-Fi cards remain local and reserved.
 - No field internet or persistent WebSocket is needed. Boot and checkpoint calls use HMAC challenge-authenticated HTTPS actions `missionGameConfiguration` and `missionCheckpoint`.
