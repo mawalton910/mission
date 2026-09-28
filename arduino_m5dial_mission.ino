@@ -2217,7 +2217,7 @@ public:
     if (currentMission) { delete currentMission; currentMission = nullptr; }
     playSound(SND_RESET, SND_RESET_LEN, 255, "RESET", EXT_RESET);
     displayMessage(DisplayText::FULL_RESET, COLOR_WARNING, 2000);
-    stateManager.clearAll(); stateManager.clearCompletedBadges();
+    stateManager.clearAll(false); stateManager.clearCompletedBadges();
     stateManager.clearSavedTrackerState(); stateManager.clearSavedMissionStart();
     stateManager.clearMissionStartTime(); stateManager.clearMissionTimeoutMs(); stateManager.clearLockedDifficulty();
     currentBadgeUID = ""; currentMissionCardUID = "";
