@@ -46,6 +46,12 @@ Game setup is intentionally immutable between initial download and factory reset
 - A normal `RESET` keeps the downloaded catalog and saved Wi-Fi.
 - On **GAME SETUP NEEDED / PRESS TO RETRY**, read the Serial `[CONFIG]` message: fix the indicated game assignment, tag, device provisioning, Wi-Fi, clock or storage issue, then press the dial button. The Wi-Fi config tag remains usable while setup is blocked.
 
+Firmware v26.4.3 also shows the failure reason on the dial. A tag collision identifies the POI/NPC name, UUID, and conflicting local control role. The full message remains available with `CONFIG` on Serial if it is too long for the round display.
+
+Heist 2's DNR Medical Center uses `EF96E264`. That UID was removed from the old `COMPLETE_TAGS` list at the operator's request; it remains a POI tag and no longer completes a mission. The other completion cards remain configured. A scan of the current live catalog against all local control-card groups found no remaining overlaps.
+
+The Wi-Fi hostname combines `WIFI_HOSTNAME_PREFIX` and `DEVICE_SERIAL_NUM`, for example `mission-GGInteractiveWidget1`. It is a router label, not the game selector. `DEVICE_GAME_ID` and the server's widget assignment determine the game. Reset reason 11 is the ESP32 core's USB reset reason and is now labeled `USB` instead of `UNKNOWN`.
+
 Do not publish the local `secrets.h` or device-specific compiled binary. The credentials in that file are not part of the source release.
 
 ## File audit

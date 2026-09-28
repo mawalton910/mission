@@ -67,21 +67,23 @@ const int NUM_WIFI_PRESETS = sizeof(WIFI_PRESETS) / sizeof(WIFI_PRESETS[0]);
 
 // Location names (25: 24 production + 1 dev)
 // Shared by bootstrap validation and scan routing. Privileged cards stay locally provisioned.
-bool isReservedGameTag(const String& uid) {
-  if (uid.isEmpty()) return false;
+const char* reservedGameTagRole(const String& uid) {
+  if (uid.isEmpty()) return nullptr;
   const String* groups[] = { COMPLETE_TAGS, FULL_RESET_TAGS, RESET_TAG, BADGE_RESET_TAGS,
     SCRUB_MISSION_TAGS, ADMIN_BADGE_TAGS };
   const int sizes[] = { NUM_COMPLETE_TAGS, NUM_FULL_RESET_TAGS, NUM_RESET_TAGS, NUM_BADGE_RESET_TAGS,
     NUM_SCRUB_MISSION_TAGS, NUM_ADMIN_BADGE_TAGS };
+  const char* roles[] = { "mission completion", "factory reset", "mission reset", "badge reset",
+    "mission scrub", "admin" };
   for (int group = 0; group < 6; ++group) for (int i = 0; i < sizes[group]; ++i)
-    if (GameConfiguration::normalizeUid(groups[group][i]) == uid) return true;
+    if (GameConfiguration::normalizeUid(groups[group][i]) == uid) return roles[group];
   for (int i = 0; i < NUM_WIFI_CONFIG_TAGS; ++i)
-    if (GameConfiguration::normalizeUid(WIFI_CONFIG_TAGS[i]) == uid) return true;
+    if (GameConfiguration::normalizeUid(WIFI_CONFIG_TAGS[i]) == uid) return "Wi-Fi setup";
   for (int i = 0; i < NUM_WIFI_PRESETS; ++i)
-    if (GameConfiguration::normalizeUid(WIFI_PRESETS[i].tagUID) == uid) return true;
+    if (GameConfiguration::normalizeUid(WIFI_PRESETS[i].tagUID) == uid) return "Wi-Fi preset";
   for (const auto& tag : OTA_TRIGGER_UIDS)
-    if (GameConfiguration::normalizeUid(tag) == uid) return true;
-  return false;
+    if (GameConfiguration::normalizeUid(tag) == uid) return "firmware update";
+  return nullptr;
 }
 
 const char* LOCATION_NAMES[] = {
@@ -201,6 +203,7 @@ const char* resetReasonName(esp_reset_reason_t reason) {
     case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
     case ESP_RST_BROWNOUT: return "BROWNOUT";
     case ESP_RST_SDIO: return "SDIO";
+    case ESP_RST_USB: return "USB";
     default: return "UNKNOWN";
   }
 }
@@ -665,7 +668,32 @@ public:
     trackerState = WAIT_FOR_GAME_CONFIG;
     waitingForBadge = false;
     Serial.println("[CONFIG] " + gameConfiguration.error());
-    displayMultiLineMessage("GAME SETUP NEEDED", "PRESS TO RETRY", COLOR_WARNING);
+    M5Dial.Display.fillScreen(isVaultTheme() ? vaultBg() : TFT_BLACK);
+    if (isVaultTheme()) drawVaultBackdrop();
+    M5Dial.Display.setTextDatum(MC_DATUM);
+    M5Dial.Display.setTextSize(1);
+    M5Dial.Display.setTextColor(isVaultTheme() ? vaultPrimaryBright() : TFT_ORANGE);
+    M5Dial.Display.drawString("GAME SETUP NEEDED", 120, 40);
+    M5Dial.Display.setTextColor(TFT_WHITE);
+    String remaining = gameConfiguration.error();
+    if (remaining.isEmpty()) remaining = "Game configuration has not loaded.";
+    remaining.replace('\n', ' ');
+    // Keep diagnostics inside the round display. The complete reason is also on Serial.
+    for (int line = 0; line < 8 && !remaining.isEmpty(); ++line) {
+      remaining.trim();
+      int end = remaining.length();
+      while (end > 1 && M5Dial.Display.textWidth(remaining.substring(0, end)) > 184) --end;
+      if (end < (int)remaining.length()) {
+        int space = remaining.lastIndexOf(' ', end);
+        if (space > 0) end = space;
+      }
+      String text = remaining.substring(0, end);
+      if (line == 7 && end < (int)remaining.length()) text = "See Serial for details";
+      M5Dial.Display.drawString(text, 120, 68 + line * 14);
+      remaining = remaining.substring(end);
+    }
+    M5Dial.Display.setTextColor(isVaultTheme() ? vaultPrimaryBright() : TFT_ORANGE);
+    M5Dial.Display.drawString("PRESS TO RETRY", 120, 198);
   }
 
   bool ensureGameConfiguration() {

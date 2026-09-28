@@ -3,7 +3,7 @@
 #include "secrets.h"
 
 // ===== FIRMWARE VERSION =====
-#define FIRMWARE_VERSION "POIStory v26.4.2"
+#define FIRMWARE_VERSION "POIStory v26.4.3"
 
 // Normal use: change only DEVICE_GAME_ID in your ignored secrets.h.
 // False is an explicit legacy/offline-table build, never an automatic fallback.
@@ -214,8 +214,8 @@ const uint16_t RESOURCE_COLOR_MONEY = 0x07EF;      // Green (R:0, G:63, B:0)
 
 // ===== RFID TAG CONFIGURATION =====
 // Mission complete tags
+// EF96E264 belongs to DNR Medical Center in Heist 2, not mission completion.
 const String COMPLETE_TAGS[] = {
-    " EF 96 E2 64",
     " 6F 14 E4 64",
     " 04 F5 E8 2A 0A 12 90",
     " 04 2E D6 2A 0A 12 91",

@@ -10,7 +10,7 @@
 #include "../GameConfiguration.h"
 #undef private
 #include "../GameConfiguration.cpp"
-bool isReservedGameTag(const String& tag) { return tag == "DEADBEEF"; }
+const char* reservedGameTagRole(const String& tag) { return tag == "DEADBEEF" ? "mission completion" : nullptr; }
 
 int main(int argc, char** argv) {
   assert(argc == 2);
@@ -39,6 +39,12 @@ int main(int argc, char** argv) {
   };
   assert(!config.parse(replace("AABBCCDD", "04A1B2C3456789"), game));
   assert(!config.parse(replace("AABBCCDD", "DEADBEEF"), game));
+  assert(config.error().find("DEADBEEF") != std::string::npos);
+  assert(config.error().find("mission completion") != std::string::npos);
+  assert(config.error().find("POI:") != std::string::npos);
+  assert(!config.parse(replace("FAAC1307", "DEADBEEF"), game));
+  assert(config.error().find("NPC:") != std::string::npos);
+  assert(config.error().find("DEADBEEF") != std::string::npos);
   assert(!config.parse(replace("AABBCCDD", "RF111111"), game));
   assert(!config.parse(replace("\"schema_version\":1", "\"schema_version\":2"), game));
   assert(!config.parse(String(MAX_GAME_CONFIG_BYTES + 1, 'x'), game));

@@ -95,7 +95,10 @@ bool GameConfiguration::parse(const String& json, const String& expectedGame) {
   for (JsonObject row : locations) {
     GamePoi poi{row["id"] | "", row["name"] | "", normalizeUid(row["uuid"] | "")};
     if (!hexId(poi.id, 24) || !validName(poi.name) || poi.uuid.isEmpty()) return false;
-    if (isReservedGameTag(poi.uuid)) { lastError = "POI uses an admin/control tag"; return false; }
+    if (const char* role = reservedGameTagRole(poi.uuid)) {
+      lastError = String("POI: ") + poi.name + ". Tag " + poi.uuid + " is also a " + role + " card.";
+      return false;
+    }
     for (const auto& previous : nextPois) if (previous.uuid == poi.uuid || previous.id == poi.id) return false;
     nextPois.push_back(poi);
   }
@@ -111,7 +114,11 @@ bool GameConfiguration::parse(const String& json, const String& expectedGame) {
   bool assignmentFound = assigned.isEmpty();
   for (JsonObject row : doc["npcs"].as<JsonArray>()) {
     GameNpc npc{row["id"] | "", row["name"] | "", normalizeUid(row["uuid"] | "")};
-    if (!hexId(npc.id, 24) || !validName(npc.name) || npc.uuid.isEmpty() || isReservedGameTag(npc.uuid)) return false;
+    if (!hexId(npc.id, 24) || !validName(npc.name) || npc.uuid.isEmpty()) return false;
+    if (const char* role = reservedGameTagRole(npc.uuid)) {
+      lastError = String("NPC: ") + npc.name + ". Tag " + npc.uuid + " is also a " + role + " card.";
+      return false;
+    }
     for (const auto& previous : nextNpcs) if (previous.id == npc.id || previous.uuid == npc.uuid) return false;
     for (const auto& poi : nextPois) if (poi.uuid == npc.uuid) return false;
     if (npc.id == assigned) assignmentFound = true;

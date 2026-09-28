@@ -42,7 +42,7 @@ class GameConfiguration {
 
 extern GameConfiguration gameConfiguration;
 // Local control/admin cards must never become visit tags through remote configuration.
-bool isReservedGameTag(const String& canonicalUid);
+const char* reservedGameTagRole(const String& canonicalUid);
 int missionLocationCount();
 String missionLocationName(int index);
 int missionLocationForTag(const String& tag);
