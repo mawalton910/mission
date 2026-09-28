@@ -12,11 +12,7 @@
 #endif
 
 #if ENABLE_EXTERNAL_NFC
-#include <M5UnitUnified.h>
-#include <M5UnitUnifiedNFC.h>
-#include <M5Utility.h>
-#include <wiring/m5_unit_unified_wiring.hpp>
-#include <vector>
+#include "src/rfid2/PortARfid2.h"
 #define MISSION_NFC_AVAILABLE 1
 #else
 #define MISSION_NFC_AVAILABLE 0
@@ -35,9 +31,7 @@ void fillLeds(const CRGB& color) {
 #endif
 
 #if MISSION_NFC_AVAILABLE
-m5::unit::UnitUnified units;
-m5::unit::UnitNFC unitNfc;
-m5::nfc::NFCLayerA nfcA(unitNfc);
+PortARfid2 rfid2(0x28);
 #endif
 }  // namespace
 
@@ -52,7 +46,13 @@ void MissionModules::begin() {
 #endif
 
 #if MISSION_NFC_AVAILABLE
-  _nfcReady = m5::unit::wiring::addI2C(units, unitNfc) && units.begin();
+  M5.Ex_I2C.begin();
+  if (M5.Ex_I2C.scanID(0x28)) {
+    rfid2.PCD_Init();
+    uint8_t version = rfid2.PCD_ReadRegister(PortARfid2::VersionReg);
+    _nfcReady = version != 0x00 && version != 0xFF;
+    Serial.printf("[RFID2] Port A SDA=%d SCL=%d VersionReg=0x%02X\n", M5.Ex_I2C.getSDA(), M5.Ex_I2C.getSCL(), version);
+  }
   Serial.printf("[Modules] Unit NFC/RFID2 on Port A: %s\n", _nfcReady ? "ready" : "not found");
   scanPortAI2c();
 #endif
@@ -60,7 +60,7 @@ void MissionModules::begin() {
 
 void MissionModules::update() {
 #if MISSION_NFC_AVAILABLE
-  if (_nfcReady) units.update();
+  // RFID2 is polled directly; no background NFC engine is needed.
 #endif
   if (_state == MissionModuleState::PLAYING && _targetReached &&
       millis() - _lastTargetPulseAt >= 70) {
@@ -93,8 +93,7 @@ void MissionModules::scanPortAI2c() const {
   int found = 0;
   Serial.printf("[Modules] Port A I2C scan: SDA=%d SCL=%d addresses=", sda, scl);
   for (uint8_t address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    if (Wire.endTransmission() == 0) {
+    if (M5.Ex_I2C.scanID(address)) {
       Serial.printf(" 0x%02X", address);
       found++;
     }
@@ -109,18 +108,17 @@ void MissionModules::scanPortAI2c() const {
 bool MissionModules::pollExternalNfc(String& uidOut) {
 #if MISSION_NFC_AVAILABLE
   if (!_nfcReady) return false;
-  std::vector<m5::nfc::a::PICC> piccs;
-  if (!nfcA.detect(piccs) || piccs.empty()) return false;
-
+  uint8_t atqa[2] = {0, 0}, size = sizeof(atqa);
+  uint8_t status = rfid2.PICC_RequestA(atqa, &size);
+  if (status != PortARfid2::STATUS_OK && status != PortARfid2::STATUS_COLLISION) return false;
+  if (!rfid2.PICC_ReadCardSerial()) return false;
   uidOut = "";
-  const auto& picc = piccs.front();
-  for (uint8_t index = 0; index < picc.size; index++) {
-    char byteText[4];
-    snprintf(byteText, sizeof(byteText), " %02X", picc.uid[index]);
+  for (uint8_t index = 0; index < rfid2.uid.size; index++) {
+    char byteText[4]; snprintf(byteText, sizeof(byteText), " %02X", rfid2.uid.uidByte[index]);
     uidOut += byteText;
   }
-  nfcA.deactivate();
-  Serial.printf("[NFC:Port A] Card scanned:%s\n", uidOut.c_str());
+  rfid2.PICC_HaltA(); rfid2.PCD_StopCrypto1();
+  Serial.printf("[RFID2:Port A] Card scanned:%s\n", uidOut.c_str());
   return uidOut.length() > 0;
 #else
   (void)uidOut;

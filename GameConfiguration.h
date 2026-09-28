@@ -8,6 +8,7 @@ constexpr size_t MAX_GAME_CONFIG_BYTES = 32768;
 struct GamePoi { String id, name, uuid; };
 struct GameFaction { String id, name, color; };
 struct GameNpc { String id, name, uuid; };
+struct GameCard { String name, uuid; };
 
 class GameConfiguration {
  public:
@@ -24,6 +25,9 @@ class GameConfiguration {
   int findUuid(const String& uuid) const;
   int findId(const String& id) const;
   String npcIdForTag(const String& uuid) const;
+  String npcNameForTag(const String& uuid) const;
+  bool isCompletionTag(const String& uuid) const;
+  bool requestAction(const char* action, JsonObjectConst payload, String& responseBody);
   String defaultNpcTag() const;
   String factionName(const String& id) const;
   void printStatus() const;
@@ -35,6 +39,8 @@ class GameConfiguration {
   std::vector<GamePoi> pois;
   std::vector<GameFaction> factions;
   std::vector<GameNpc> npcs;
+  std::vector<GameNpc> missionTags;
+  std::vector<GameCard> completionTags;
   bool parse(const String& json, const String& expectedGame);
   bool readCache(const char* path, const String& expectedGame);
   bool saveCache(const String& json, const String& expectedGame);

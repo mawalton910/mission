@@ -3,7 +3,7 @@
 #include "secrets.h"
 
 // ===== FIRMWARE VERSION =====
-#define FIRMWARE_VERSION "POIStory v26.4.3"
+#define FIRMWARE_VERSION "POIStory v26.5.0"
 
 // Normal use: change only DEVICE_GAME_ID in your ignored secrets.h.
 // False is an explicit legacy/offline-table build, never an automatic fallback.
@@ -24,7 +24,7 @@ enum UITheme {
 
 // Keep THEME_GENERAL for the existing look.
 // THEME_VAULT applies the Fallout-inspired orange palette and animation accents.
-const UITheme ACTIVE_UI_THEME = THEME_VAULT;
+const UITheme ACTIVE_UI_THEME = THEME_GENERAL;
 
 // Set true for a firmware build dedicated to the shared NPC story-round dial.
 // False preserves the current local/random mission behavior.
@@ -33,7 +33,7 @@ const bool STORY_MODE_ON_BOOT = false;
 // ===== ADMIN CONFIGURATION =====
 #define ADMIN_BUTTON_HOLD_TIME 10000     // Hold button for 10 seconds to enter admin
 #define ADMIN_EXIT_TIMEOUT 30000        // Auto-exit after 30s inactivity
-#define ADMIN_MENU_ITEMS 10             // Device Info, Mission, Story Round, Relay, Dev Mode, Log, Scan Tag, NPC Tag, Safe Crack, Exit
+#define ADMIN_MENU_ITEMS 11             // Device Info, Mission, Story Round, Relay, Dev Mode, Log, Scan Tag, NPC Tag, Safe Crack, Exit
 #define ADMIN_MENU_SCROLL_DELAY 100     // Scroll delay in ms
 
 // ===== OPTIONAL EXTERNAL MODULES =====

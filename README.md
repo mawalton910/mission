@@ -1,9 +1,15 @@
 ﻿# Guru Games - Mission - POI Story System
-**Current Version**: POIStory v26.4.1  
+**Current Version**: POIStory v26.5.0
 **Platform**: ESP32-S3 (Crabik SLot ESP32-S3) with M5Stack Dial  
 **Maintained by**: mawalton910
 
 A location-based mission tracking system built on the M5Stack Dial (ESP32-S3) for immersive story-driven gameplay in live-action role-playing events.
+
+## Current game-configured mission flow
+
+See [Game setup and offline checkpoint guide](Documents/GAME_CONFIGURATION.md) for v26.5.0. Set the game ID, download the Creator configuration at boot, scan player badges and an NPC card, visit four assigned POIs offline, then return to the same NPC to confirm rewards and request the next available run. RFID2 is supported on Port A. The guide covers Creator card mapping, refresh, storage recovery and Serial messages.
+
+The feature overview below also describes the legacy local mission modes. The game-configured four-POI flow uses the NPC's round assignment and the game's Mission Difficulty rewards.
 
 ---
 

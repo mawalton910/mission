@@ -86,6 +86,7 @@ bool GameConfiguration::parse(const String& json, const String& expectedGame) {
   String returnedGame = doc["game"]["id"] | "";
   String returnedName = doc["game"]["name"] | "";
   String returnedRevision = doc["revision"] | "";
+  if ((doc["profile_version"] | 0) != 2) { lastError = "Mission profile update needed"; return false; }
   if ((doc["schema_version"] | 0) != 1 || !hexId(returnedGame, 24) || returnedGame != expectedGame ||
       !validName(returnedName) || !hexId(returnedRevision, 64)) return false;
   if (!doc["pois"].is<JsonArray>() || !doc["factions"].is<JsonArray>() || !doc["npcs"].is<JsonArray>()) return false;
@@ -125,7 +126,29 @@ bool GameConfiguration::parse(const String& json, const String& expectedGame) {
     nextNpcs.push_back(npc);
   }
   if (!assignmentFound) return false;
+  if (!doc["mission_tags"].is<JsonArray>() || !doc["completion_tags"].is<JsonArray>() ||
+      doc["mission_tags"].size() > 32 || doc["completion_tags"].size() > 32) return false;
+  std::vector<GameNpc> nextMissionTags;
+  std::vector<GameCard> nextCompletionTags;
+  std::vector<String> known;
+  for (const auto& poi : nextPois) known.push_back(poi.uuid);
+  for (const auto& npc : nextNpcs) known.push_back(npc.uuid);
+  for (const char* key : {"mission_tags", "completion_tags"}) {
+    for (JsonObject row : doc[key].as<JsonArray>()) {
+      String cardName = row["name"] | "", tag = normalizeUid(row["uuid"] | "");
+      if (!validName(cardName) || tag.isEmpty()) return false;
+      if (const char* role = reservedGameTagRole(tag)) { lastError = cardName + ": tag is also a " + role + " card"; return false; }
+      for (const auto& previous : known) if (previous == tag) return false;
+      known.push_back(tag);
+      if (strcmp(key, "mission_tags") == 0) {
+        String npcId = row["npc_id"] | "", npcName = row["npc_name"] | "";
+        if (!hexId(npcId, 24) || !validName(npcName)) return false;
+        nextMissionTags.push_back({npcId, npcName, tag});
+      } else nextCompletionTags.push_back({cardName, tag});
+    }
+  }
   pois = std::move(nextPois); factions = std::move(nextFactions); npcs = std::move(nextNpcs);
+  missionTags = std::move(nextMissionTags); completionTags = std::move(nextCompletionTags);
   gameId = returnedGame; gameName = returnedName; revision = returnedRevision; defaultNpcId = assigned;
   valid = true; lastError = "";
   return true;
@@ -172,7 +195,7 @@ bool GameConfiguration::saveCache(const String& json, const String& expectedGame
 }
 
 bool GameConfiguration::clear() {
-  valid = false; pois.clear(); factions.clear(); npcs.clear();
+  valid = false; pois.clear(); factions.clear(); npcs.clear(); missionTags.clear(); completionTags.clear();
   if (!SPIFFS.begin(false)) { lastError = "Storage unavailable"; return false; }
   bool ok = true;
   for (const char* path : {CONFIG_CACHE_FILE, CONFIG_BACKUP_FILE, CONFIG_PENDING_FILE}) if (SPIFFS.exists(path) && !SPIFFS.remove(path)) ok = false;
@@ -181,9 +204,7 @@ bool GameConfiguration::clear() {
 }
 
 #ifndef MISSION_CONFIG_HOST_TEST
-bool GameConfiguration::download(const String& expectedGame) {
-  valid = false;
-  if (!hexId(expectedGame, 24)) { lastError = "Check DEVICE_GAME_ID"; return false; }
+bool GameConfiguration::requestAction(const char* action, JsonObjectConst actionPayload, String& responseBody) {
   String endpoint = STORY_ROUND_ENDPOINT;
   int slash = endpoint.indexOf('/', 8);
   if (!endpoint.startsWith("https://") || slash < 0) { lastError = "HTTPS server required"; return false; }
@@ -208,7 +229,7 @@ bool GameConfiguration::download(const String& expectedGame) {
   bool received = status == 200 && response(http, body, 2048);
   http.end();
   if (!received) { lastError = "Device challenge failed: " + String(status); return false; }
-  DynamicJsonDocument request(2048);
+  DynamicJsonDocument request(4096);
   {
     DynamicJsonDocument challenge(2048);
     if (deserializeJson(challenge, body)) return false;
@@ -219,8 +240,8 @@ bool GameConfiguration::download(const String& expectedGame) {
   request["serial_number"] = DEVICE_SERIAL_NUM;
   String firmware = FIRMWARE_VERSION; firmware.trim();
   request["firmware_version"] = firmware;
-  request["action"] = "missionGameConfiguration";
-  request["payload"]["game_id"] = expectedGame;
+  request["action"] = action;
+  request["payload"].set(actionPayload);
   bool signedRequest = MissionDeviceAuth::appendProof(request.as<JsonObject>(), DEVICE_MAC_ADDR, DEVICE_SERIAL_NUM, firmware);
   MissionDeviceAuth::clearChallenge();
   if (!signedRequest) { lastError = "Provision device key first"; return false; }
@@ -231,7 +252,7 @@ bool GameConfiguration::download(const String& expectedGame) {
   received = status > 0 && response(http, body, MAX_GAME_CONFIG_BYTES + 1024);
   http.end();
   if (!received) { lastError = "Config download failed: " + String(status); return false; }
-  String configJson;
+
   {
     DynamicJsonDocument result(65536);
     if (deserializeJson(result, body) || result.overflowed()) { lastError = "Invalid server response"; return false; }
@@ -241,14 +262,30 @@ bool GameConfiguration::download(const String& expectedGame) {
       lastError = message;
       return false;
     }
-    serializeJson(result["body"]["configuration"], configJson);
+    serializeJson(result["body"], responseBody);
+  }
+  return true;
+}
+
+bool GameConfiguration::download(const String& expectedGame) {
+  valid = false;
+  if (!hexId(expectedGame, 24)) { lastError = "Check DEVICE_GAME_ID"; return false; }
+  DynamicJsonDocument payload(128);
+  payload["game_id"] = expectedGame;
+  String body;
+  if (!requestAction("missionGameConfiguration", payload.as<JsonObjectConst>(), body)) return false;
+  String configJson;
+  {
+    DynamicJsonDocument result(65536);
+    if (deserializeJson(result, body)) return false;
+    serializeJson(result["configuration"], configJson);
   }
   body = "";
-  if (!parse(configJson, expectedGame)) return false;
-  if (!saveCache(configJson, expectedGame)) return false;
+  if (!parse(configJson, expectedGame) || !saveCache(configJson, expectedGame)) return false;
   Serial.println("[CONFIG] Downloaded and saved game configuration");
   return true;
 }
+
 #endif
 
 String GameConfiguration::poiName(int index) const { return valid && index >= 0 && index < count() ? pois[index].name : String(); }
@@ -264,7 +301,19 @@ int GameConfiguration::findId(const String& id) const {
 String GameConfiguration::npcIdForTag(const String& raw) const {
   const String tag = normalizeUid(raw);
   if (valid) for (const auto& npc : npcs) if (npc.uuid == tag) return npc.id;
+  if (valid) for (const auto& npc : missionTags) if (npc.uuid == tag) return npc.id;
   return "";
+}
+String GameConfiguration::npcNameForTag(const String& raw) const {
+  const String tag = normalizeUid(raw);
+  if (valid) for (const auto& npc : npcs) if (npc.uuid == tag) return npc.name;
+  if (valid) for (const auto& npc : missionTags) if (npc.uuid == tag) return npc.name;
+  return "";
+}
+bool GameConfiguration::isCompletionTag(const String& raw) const {
+  const String tag = normalizeUid(raw);
+  if (valid) for (const auto& card : completionTags) if (card.uuid == tag) return true;
+  return false;
 }
 String GameConfiguration::defaultNpcTag() const {
   if (valid) for (const auto& npc : npcs) if (npc.id == defaultNpcId) return npc.uuid;

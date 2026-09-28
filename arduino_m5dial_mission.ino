@@ -23,9 +23,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <M5UnitUnified.h>
-#include <M5UnitUnifiedNFC.h>
-#include <M5Utility.h>
 #include <map>
 #include <set>
 #include <vector>
@@ -34,6 +31,8 @@
 #include <esp_system.h>
 #include "Config.h"
 #include "GameConfiguration.h"
+#include "CheckpointDial.h"
+#include "DialScreen.h"
 #include "MissionBase.h"
 #include "FreeRoamMission.h"
 #include "StateManager.h"
@@ -75,7 +74,7 @@ const char* reservedGameTagRole(const String& uid) {
     NUM_SCRUB_MISSION_TAGS, NUM_ADMIN_BADGE_TAGS };
   const char* roles[] = { "mission completion", "factory reset", "mission reset", "badge reset",
     "mission scrub", "admin" };
-  for (int group = 0; group < 6; ++group) for (int i = 0; i < sizes[group]; ++i)
+  for (int group = REMOTE_GAME_CONFIGURATION ? 1 : 0; group < 6; ++group) for (int i = 0; i < sizes[group]; ++i)
     if (GameConfiguration::normalizeUid(groups[group][i]) == uid) return roles[group];
   for (int i = 0; i < NUM_WIFI_CONFIG_TAGS; ++i)
     if (GameConfiguration::normalizeUid(WIFI_CONFIG_TAGS[i]) == uid) return "Wi-Fi setup";
@@ -436,6 +435,7 @@ public:
   }
 
   void debugClearNpcAssignment() {
+    if (checkpointMode()) { reset(); return; }
     stateManager.clearStoryNpcToken();
     stateManager.clearStoryNpcName();
     stateManager.clearStoryNpcLootId();
@@ -613,7 +613,8 @@ public:
     logger.begin();
     Serial.printf("[BOOT] after logger.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
     if (!ensureGameConfiguration()) { showGameConfigurationWait(); return; }
-    autoAssignConfiguredNpc();
+    if (REMOTE_GAME_CONFIGURATION) checkpointDial.begin(DEVICE_GAME_ID);
+    else autoAssignConfiguredNpc();
     activeMissionTimeoutMs = sanitizeMissionTimeoutMs(stateManager.getMissionTimeoutMs());
     Serial.printf("[BOOT] %lums  Mission timeout: %lu minutes\n", millis(), activeMissionTimeoutMs / 60000UL);
     storyNpcToken = normalizeRfidToken(stateManager.getStoryNpcToken());
@@ -638,6 +639,8 @@ public:
     const char* modeLabel = currentMode == MODE_RELAY ? "Relay" : (currentMode == MODE_STORY_MISSION_WIDGET ? "Story Round" : "Mission Widget");
     Serial.printf("[BOOT] %lums  Mode: %s\n", millis(), modeLabel);
     logger.log("Boot: " + String(modeLabel));
+
+    if (REMOTE_GAME_CONFIGURATION && currentMode != MODE_RELAY) { trackerState = WAIT_FOR_BADGE; checkpointDial.redraw(); checkpointDial.update(); return; }
 
     if (currentMode == MODE_MISSION_WIDGET || currentMode == MODE_STORY_MISSION_WIDGET) {
       trackerState = storyNpcToken.length() > 0 ? WAIT_FOR_BADGE : WAIT_FOR_NPC_TOKEN;
@@ -735,7 +738,10 @@ public:
   // ============================================================
   // restoreFromSavedSnapshot() Ã¢â‚¬â€ power-loss recovery
   // ============================================================
+  bool checkpointMode() const { return REMOTE_GAME_CONFIGURATION && currentMode != MODE_RELAY; }
+
   bool restoreFromSavedSnapshot() {
+    if (checkpointMode()) { checkpointDial.redraw(); return gameConfiguration.ready(); }
     if (REMOTE_GAME_CONFIGURATION && !gameConfiguration.ready()) return false;
     if ((currentMode == MODE_MISSION_WIDGET || currentMode == MODE_STORY_MISSION_WIDGET)
         && !stateManager.hasStoryNpcToken()) {
@@ -928,6 +934,17 @@ public:
         }
       }
       showGameConfigurationWait();
+      return;
+    }
+
+    if (checkpointMode()) {
+      const char* role = reservedGameTagRole(GameConfiguration::normalizeUid(cardUID));
+      if (role && (strcmp(role, "mission reset") == 0 || strcmp(role, "badge reset") == 0 || strcmp(role, "mission scrub") == 0)) {
+        checkpointDial.reset(); return;
+      }
+      if (role && strcmp(role, "Wi-Fi setup") == 0) { trackerState = WIFI_CONFIG; displayMultiLineMessage(DisplayText::WIFI_CONFIG_MODE, DisplayText::WIFI_SCAN_SSID, COLOR_PROCESSING); return; }
+      if (role) { DialScreen::message("CONTROL CARD", role, "Use the admin menu"); return; }
+      checkpointDial.tag(cardUID, [this]() { return connectToWiFi(); }, [this]() { shutdownWiFi(); });
       return;
     }
 
@@ -1212,6 +1229,8 @@ public:
       return;
     }
 
+    if (checkpointMode() && trackerState != ADMIN_MODE && trackerState != WIFI_CONFIG && trackerState != SAFE_CRACK) { checkpointDial.press(); return; }
+
     // Admin mode button
     if (trackerState == ADMIN_MODE) {
       if (!adminInMenu) {
@@ -1291,6 +1310,8 @@ public:
       if (trackerState != WAIT_FOR_GAME_CONFIG) showGameConfigurationWait();
       return;
     }
+
+    if (checkpointMode() && trackerState != ADMIN_MODE && trackerState != WIFI_CONFIG) { checkpointDial.update(); return; }
 
     if (currentMode == MODE_RELAY && WiFi.status() != WL_CONNECTED && millis() - lastWiFiReconnectAttemptMs >= WIFI_BACKGROUND_RECONNECT_INTERVAL_MS) {
       lastWiFiReconnectAttemptMs = millis();
@@ -1478,6 +1499,7 @@ public:
       {"N", TFT_DARKGREEN, "NPC TAG","RESET",  "Clear saved NPC assignment", TFT_GREEN},
       {"C", TFT_MAROON,    "SAFE","CRACK",     "Launch the vault mini-game", TFT_ORANGE},
       {"X", TFT_BLACK,     "EXIT","ADMIN",     "Return to Main", TFT_WHITE},
+      {"U", TFT_NAVY, "REFRESH", "GAME SETUP", "Download Creator settings", TFT_CYAN},
     };
 
     if (adminMenuSelection == 9) {
@@ -1510,6 +1532,7 @@ public:
   }
 
   void exitAdminMode() {
+    if (checkpointMode() && gameConfiguration.ready()) { trackerState = WAIT_FOR_BADGE; checkpointDial.redraw(); checkpointDial.update(); return; }
     if (REMOTE_GAME_CONFIGURATION && !gameConfiguration.ready()) { showGameConfigurationWait(); return; }
     const char* modeLabel = currentMode == MODE_RELAY ? "Relay" : (currentMode == MODE_STORY_MISSION_WIDGET ? "Story Round" : "Mission");
     Serial.printf("[ACTION] %lums  Exiting admin mode (mode: %s)\n", millis(), modeLabel);
@@ -2232,6 +2255,7 @@ public:
   }
 
   void fullReset() {
+    if (REMOTE_GAME_CONFIGURATION && !checkpointDial.reset(true)) { displayError("Storage erase failed"); return; }
     if (REMOTE_GAME_CONFIGURATION) {
       if (!gameConfiguration.clear()) { showGameConfigurationWait(); return; }
       stateManager.clearAll(false);
@@ -2279,6 +2303,10 @@ public:
   }
 
   void reset(bool bypassCooldown = true) {
+    if (checkpointMode()) {
+      if (checkpointDial.reset()) trackerState = WAIT_FOR_BADGE;
+      return;
+    }
     Serial.printf("[ACTION] %lums  reset (bypassCooldown=%s)\n", millis(), bypassCooldown ? "true" : "false");
     if (currentMission) { delete currentMission; currentMission = nullptr; }
     for (int i = 0; i < MAX_PLAYERS; i++) playerUUIDs[i] = "";
@@ -3372,6 +3400,16 @@ private:
         safeCrack.begin();
         break;
       case 9: exitAdminMode(); break;
+      case 10: {
+        if (checkpointDial.hasUnpaidRun()) { DialScreen::message("FINISH YOUR RUN", "Return to the NPC before refreshing setup."); delay(2000); displayAdminMode(); break; }
+        DialScreen::message("REFRESH GAME SETUP", "Connecting to Creator settings");
+        bool ok = connectToWiFi() && gameConfiguration.download(DEVICE_GAME_ID);
+        String error = gameConfiguration.error();
+        shutdownWiFi();
+        if (ok) { checkpointDial.reset(); ESP.restart(); }
+        else { gameConfiguration.load(DEVICE_GAME_ID); DialScreen::message("REFRESH FAILED", error); delay(2500); displayAdminMode(); }
+        break;
+      }
     }
   }
 
