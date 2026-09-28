@@ -3,7 +3,11 @@
 #include "secrets.h"
 
 // ===== FIRMWARE VERSION =====
-#define FIRMWARE_VERSION "POIStory v26.4.1 "
+#define FIRMWARE_VERSION "POIStory v26.4.2"
+
+// Normal use: change only DEVICE_GAME_ID in your ignored secrets.h.
+// False is an explicit legacy/offline-table build, never an automatic fallback.
+const bool REMOTE_GAME_CONFIGURATION = true;
 
 // ===== OPERATIONAL MODES =====
 // Device can operate in two modes, switchable via admin menu

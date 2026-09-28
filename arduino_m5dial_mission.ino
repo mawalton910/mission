@@ -33,6 +33,7 @@
 #include <esp_log.h>
 #include <esp_system.h>
 #include "Config.h"
+#include "GameConfiguration.h"
 #include "MissionBase.h"
 #include "FreeRoamMission.h"
 #include "StateManager.h"
@@ -65,6 +66,24 @@ const WiFiCredential WIFI_PRESETS[] = {
 const int NUM_WIFI_PRESETS = sizeof(WIFI_PRESETS) / sizeof(WIFI_PRESETS[0]);
 
 // Location names (25: 24 production + 1 dev)
+// Shared by bootstrap validation and scan routing. Privileged cards stay locally provisioned.
+bool isReservedGameTag(const String& uid) {
+  if (uid.isEmpty()) return false;
+  const String* groups[] = { COMPLETE_TAGS, FULL_RESET_TAGS, RESET_TAG, BADGE_RESET_TAGS,
+    SCRUB_MISSION_TAGS, ADMIN_BADGE_TAGS, MISSION_CARD_TAGS, FREE_ROAM_MISSION_TAGS };
+  const int sizes[] = { NUM_COMPLETE_TAGS, NUM_FULL_RESET_TAGS, NUM_RESET_TAGS, NUM_BADGE_RESET_TAGS,
+    NUM_SCRUB_MISSION_TAGS, NUM_ADMIN_BADGE_TAGS, NUM_MISSION_CARD_TAGS, NUM_FREE_ROAM_MISSION_TAGS };
+  for (int group = 0; group < 8; ++group) for (int i = 0; i < sizes[group]; ++i)
+    if (GameConfiguration::normalizeUid(groups[group][i]) == uid) return true;
+  for (int i = 0; i < NUM_WIFI_CONFIG_TAGS; ++i)
+    if (GameConfiguration::normalizeUid(WIFI_CONFIG_TAGS[i]) == uid) return true;
+  for (int i = 0; i < NUM_WIFI_PRESETS; ++i)
+    if (GameConfiguration::normalizeUid(WIFI_PRESETS[i].tagUID) == uid) return true;
+  for (const auto& tag : OTA_TRIGGER_UIDS)
+    if (GameConfiguration::normalizeUid(tag) == uid) return true;
+  return false;
+}
+
 const char* LOCATION_NAMES[] = {
     "Allens Corner Store",              // 0
     "Grizzly Gas",                      // 1
@@ -343,7 +362,8 @@ enum TrackerState : int {
   CONFIRM_PLAYERS,
   RELAY_WAIT_BADGE,
   WAIT_FOR_NPC_TOKEN,
-  SAFE_CRACK
+  SAFE_CRACK,
+  WAIT_FOR_GAME_CONFIG
 };
 
 const char* stateName(TrackerState s) {
@@ -356,6 +376,7 @@ const char* stateName(TrackerState s) {
     case WIFI_CONFIG:          return "WIFI_CONFIG";
     case CONFIRM_PLAYERS:      return "CONFIRM_PLAYERS";
     case RELAY_WAIT_BADGE:     return "RELAY_WAIT_BADGE";
+    case WAIT_FOR_GAME_CONFIG: return "WAIT_FOR_GAME_CONFIG";
     case SAFE_CRACK:           return "SAFE_CRACK";
     default:                   return "UNKNOWN";
   }
@@ -588,6 +609,8 @@ public:
     Serial.printf("[BOOT] before logger.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
     logger.begin();
     Serial.printf("[BOOT] after logger.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
+    if (!ensureGameConfiguration()) { showGameConfigurationWait(); return; }
+    autoAssignConfiguredNpc();
     activeMissionTimeoutMs = sanitizeMissionTimeoutMs(stateManager.getMissionTimeoutMs());
     Serial.printf("[BOOT] %lums  Mission timeout: %lu minutes\n", millis(), activeMissionTimeoutMs / 60000UL);
     storyNpcToken = normalizeRfidToken(stateManager.getStoryNpcToken());
@@ -638,10 +661,54 @@ public:
     }
   }
 
+  void showGameConfigurationWait() {
+    trackerState = WAIT_FOR_GAME_CONFIG;
+    waitingForBadge = false;
+    Serial.println("[CONFIG] " + gameConfiguration.error());
+    displayMultiLineMessage("GAME SETUP NEEDED", "PRESS TO RETRY", COLOR_WARNING);
+  }
+
+  bool ensureGameConfiguration() {
+    if (!REMOTE_GAME_CONFIGURATION) return true;
+    if (!gameConfiguration.ready() && !gameConfiguration.load(DEVICE_GAME_ID)) {
+      displayMultiLineMessage("LOADING GAME", "CONNECTING...", COLOR_INFO);
+      if (!connectToWiFi()) {
+        gameConfiguration.invalidate("Wi-Fi unavailable; check the venue Wi-Fi preset");
+        shutdownWiFi();
+        return false;
+      }
+      bool loaded = gameConfiguration.download(DEVICE_GAME_ID);
+      shutdownWiFi();
+      if (!loaded) return false;
+    }
+    if (!stateManager.bindGameConfiguration(gameConfiguration.binding())) {
+      gameConfiguration.invalidate("Could not bind saved game state");
+      return false;
+    }
+    gameConfiguration.printStatus();
+    return true;
+  }
+
+  void autoAssignConfiguredNpc() {
+    if (!REMOTE_GAME_CONFIGURATION || stateManager.hasStoryNpcToken()) return;
+    const String token = gameConfiguration.defaultNpcTag();
+    if (token.isEmpty()) return; // Several NPCs: retain the one-time physical assignment scan.
+    String name, lootId, rewards, error;
+    if (!lookupNpcAssignmentForToken(token, name, lootId, rewards, error)) {
+      Serial.println("[CONFIG] NPC assignment needs a tag scan: " + error);
+      return;
+    }
+    stateManager.setStoryNpcToken(token);
+    stateManager.setStoryNpcName(name);
+    stateManager.setStoryNpcLootId(lootId);
+    stateManager.setStoryNpcRewardSpec(rewards);
+  }
+
   // ============================================================
   // restoreFromSavedSnapshot() Ã¢â‚¬â€ power-loss recovery
   // ============================================================
   bool restoreFromSavedSnapshot() {
+    if (REMOTE_GAME_CONFIGURATION && !gameConfiguration.ready()) return false;
     if ((currentMode == MODE_MISSION_WIDGET || currentMode == MODE_STORY_MISSION_WIDGET)
         && !stateManager.hasStoryNpcToken()) {
       trackerState = WAIT_FOR_NPC_TOKEN;
@@ -824,6 +891,18 @@ public:
     }
 
     // Ã¢â€â‚¬Ã¢â€â‚¬ Relay mode Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    if (REMOTE_GAME_CONFIGURATION && !gameConfiguration.ready()) {
+      for (int i = 0; i < NUM_WIFI_CONFIG_TAGS; ++i) {
+        if (cardUID == WIFI_CONFIG_TAGS[i]) {
+          trackerState = WIFI_CONFIG;
+          displayMultiLineMessage(DisplayText::WIFI_CONFIG_MODE, DisplayText::WIFI_SCAN_SSID, COLOR_PROCESSING);
+          return;
+        }
+      }
+      showGameConfigurationWait();
+      return;
+    }
+
     // First-run dial assignment. Store the NPC-linked Loot/Item UUID in NVS.
     if (trackerState == WAIT_FOR_NPC_TOKEN) {
       String token = normalizeRfidToken(cardUID);
@@ -1099,6 +1178,12 @@ public:
       return;
     }
 
+    if (trackerState == WAIT_FOR_GAME_CONFIG) {
+      if (ensureGameConfiguration()) ESP.restart();
+      else showGameConfigurationWait();
+      return;
+    }
+
     // Admin mode button
     if (trackerState == ADMIN_MODE) {
       if (!adminInMenu) {
@@ -1171,6 +1256,11 @@ public:
         adminMenuSelection = 8;
         displayAdminMode();
       }
+      return;
+    }
+
+    if (REMOTE_GAME_CONFIGURATION && !gameConfiguration.ready() && trackerState != ADMIN_MODE && trackerState != WIFI_CONFIG) {
+      if (trackerState != WAIT_FOR_GAME_CONFIG) showGameConfigurationWait();
       return;
     }
 
@@ -1392,6 +1482,7 @@ public:
   }
 
   void exitAdminMode() {
+    if (REMOTE_GAME_CONFIGURATION && !gameConfiguration.ready()) { showGameConfigurationWait(); return; }
     const char* modeLabel = currentMode == MODE_RELAY ? "Relay" : (currentMode == MODE_STORY_MISSION_WIDGET ? "Story Round" : "Mission");
     Serial.printf("[ACTION] %lums  Exiting admin mode (mode: %s)\n", millis(), modeLabel);
     adminInMenu = true; adminMenuSelection = 0;
@@ -2073,13 +2164,8 @@ public:
     for (int i = 0; i < NUM_WIFI_CONFIG_TAGS; i++) if (tagUID == WIFI_CONFIG_TAGS[i]) return "WIFI CONFIG TAG #" + String(i+1);
     for (int i = 0; i < NUM_ADMIN_BADGE_TAGS; i++) if (tagUID == ADMIN_BADGE_TAGS[i]) return "ADMIN BADGE #" + String(i+1);
     for (int i = 0; i < NUM_MISSION_CARD_TAGS; i++) if (!MISSION_CARD_TAGS[i].isEmpty() && tagUID == MISSION_CARD_TAGS[i]) return "MISSION CARD\\nHEIST #" + String(i+1);
-    for (int i = 0; i < TOTAL_LOCATIONS; i++) {
-      const LocationInfo& loc = POI_LOCATIONS[i];
-      for (int j = 0; j < 3; j++) { if (!loc.weaponTags[j].isEmpty()   && tagUID == loc.weaponTags[j])   return "LOCATION\\n" + String(loc.name) + "\\nWEAPONS"; }
-      for (int j = 0; j < 3; j++) { if (!loc.securityTags[j].isEmpty() && tagUID == loc.securityTags[j]) return "LOCATION\\n" + String(loc.name) + "\\nSECURITY"; }
-      for (int j = 0; j < 3; j++) { if (!loc.vehicleTags[j].isEmpty()  && tagUID == loc.vehicleTags[j])  return "LOCATION\\n" + String(loc.name) + "\\nVEHICLE"; }
-      for (int j = 0; j < 3; j++) { if (!loc.moneyTags[j].isEmpty()    && tagUID == loc.moneyTags[j])    return "LOCATION\\n" + String(loc.name) + "\\nMONEY"; }
-    }
+    int location = missionLocationForTag(tagUID);
+    if (location >= 0) return "LOCATION\\n" + missionLocationName(location);
     return "UNKNOWN TAG\\n" + tagUID;
   }
 
@@ -2118,6 +2204,14 @@ public:
   }
 
   void fullReset() {
+    if (REMOTE_GAME_CONFIGURATION) {
+      if (!gameConfiguration.clear()) { showGameConfigurationWait(); return; }
+      stateManager.clearAll(false);
+      stateManager.clearCompletedBadges();
+      // Reboot into first-run download. Firmware credentials remain provisioned.
+      ESP.restart();
+      return;
+    }
     Serial.printf("[ACTION] %lums  fullReset Ã¢â‚¬â€ clearing all data\n", millis());
     if (currentMission) { delete currentMission; currentMission = nullptr; }
     playSound(SND_RESET, SND_RESET_LEN, 255, "RESET", EXT_RESET);
@@ -2664,6 +2758,7 @@ private:
 
   // Start a mission with common timer init
   void startMission(MissionBase* m, void (*configure)(MissionBase*)) {
+    if (REMOTE_GAME_CONFIGURATION && !gameConfiguration.ready()) { delete m; showGameConfigurationWait(); return; }
     if (currentMission) delete currentMission;
     currentMission = m;
     if (configure) configure(currentMission);
@@ -2684,6 +2779,7 @@ private:
   }
 
   int findStoryPoiIndex(const String& name) {
+    if (REMOTE_GAME_CONFIGURATION) return -1; // Never match an unverified tag by display name.
     String wanted = normalizeStoryPoiName(name);
     for (int i = 0; i < TOTAL_LOCATIONS; i++) {
       if (wanted == normalizeStoryPoiName(String(LOCATION_NAMES[i]))) return i;
@@ -2708,6 +2804,7 @@ private:
   }
 
   int findStoryPoiIndexByUuid(const String& uuid) {
+    if (REMOTE_GAME_CONFIGURATION) return gameConfiguration.findUuid(uuid);
     const String wanted = normalizeRfidToken(uuid);
     if (wanted.length() == 0) return -1;
     for (int i = 0; i < TOTAL_LOCATIONS; i++) {
@@ -2848,6 +2945,7 @@ private:
   }
 
   void startStoryRoundFlow(bool showSplash, const String& missionUuid) {
+    if (REMOTE_GAME_CONFIGURATION && !gameConfiguration.ready()) { showGameConfigurationWait(); return; }
     // Mission Widget keeps the Free Roam presentation, but the assigned NPC
     // token selects the server-generated shared mission for the active round.
     const bool automaticFreeRoam = currentMode == MODE_MISSION_WIDGET;
@@ -2877,7 +2975,7 @@ private:
     }
     String starterLootId = stateManager.getStoryNpcLootId();
     if (starterLootId.length() > 0) request["starter_loot_id"] = starterLootId;
-    request["npc_id"] = STORY_NPC_ID;
+    request["npc_id"] = REMOTE_GAME_CONFIGURATION ? gameConfiguration.npcIdForTag(missionUuid) : String(STORY_NPC_ID);
     JsonArray players = request.createNestedArray("player_uuids");
     for (int i = 0; i < playerCount; i++) players.add(removeSpaces(playerUUIDs[i]));
     String payload;
@@ -3009,6 +3107,7 @@ private:
 
     JsonArray poisArrayFilter = filter.createNestedArray("pois");
     JsonObject poisFilter = poisArrayFilter.createNestedObject();
+    poisFilter["id"] = true;
     poisFilter["name"] = true;
     poisFilter["uuid"] = true;
 
@@ -3116,6 +3215,8 @@ private:
       displayName.replace("~", " ");
       displayName.trim();
       int localIndex = findStoryPoiIndexByUuid(poiUuid);
+      if (REMOTE_GAME_CONFIGURATION && localIndex >= 0 &&
+          gameConfiguration.findId(pois[i]["id"].as<String>()) != localIndex) localIndex = -1;
       if (localIndex < 0) {
         localIndex = findStoryPoiIndex(poiName);
       }
@@ -3128,7 +3229,7 @@ private:
         shutdownWiFi();
         return;
       }
-      if (displayName.length() == 0) displayName = String(LOCATION_NAMES[localIndex]);
+      if (displayName.length() == 0) displayName = missionLocationName(localIndex);
       selected += String(localIndex);
       selectedNames += displayName;
       Serial.printf("[STORY] POI %d/%d: %s (uuid=%s) -> local %d\n",
@@ -3479,6 +3580,8 @@ void printSerialCommandHelp() {
   Serial.println("[SERIAL CMD] Commands:");
   Serial.println("  HELP                - show commands");
   Serial.println("  STATE               - print tracker state");
+  Serial.println("  CONFIG              - print cached game setup status");
+  Serial.println("  FACTORYRESET        - erase game setup and sessions, then reboot");
   Serial.println("  BTN                 - simulate button press");
   Serial.println("  RESET               - reset to badge/NPC flow");
   Serial.println("  NPCCLEAR            - clear saved NPC assignment");
@@ -3500,6 +3603,9 @@ void handleSerialCommand(String line) {
     printSerialCommandHelp();
     return;
   }
+
+  if (upper == "CONFIG") { gameConfiguration.printStatus(); return; }
+  if (upper == "FACTORYRESET") { tracker.fullReset(); return; }
 
   if (upper == "STATE") {
     Serial.printf("[SERIAL CMD] state=%s mode=%d players=%d mission=%s\n",

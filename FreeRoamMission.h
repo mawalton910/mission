@@ -3,6 +3,7 @@
 #include "MissionBase.h"
 #include "Config.h"
 #include "StateManager.h"
+#include "GameConfiguration.h"
 #include <vector>
 
 // ============================================================
@@ -33,7 +34,7 @@ public:
 private:
     StateManager& stateManager;
 
-    bool poiVisited[TOTAL_LOCATIONS] = {};
+    bool poiVisited[MAX_GAME_POIS] = {};
     int missionLocations[REQUIRED_LOCATIONS] = {};
     static const size_t MISSION_DISPLAY_NAME_MAX = 36;
     char missionDisplayNames[REQUIRED_LOCATIONS][MISSION_DISPLAY_NAME_MAX] = {};

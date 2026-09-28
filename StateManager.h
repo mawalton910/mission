@@ -53,8 +53,27 @@ public:
     const char* KEY_ACTIVE_MISSION_NAME = "mission_name";
     // ...existing code...
     
-    void clearAll() {
+    void clearAll(bool keepConfigurationBinding = true) {
+        String binding = keepConfigurationBinding ? prefs.getString("game_cfg", "") : String();
+        String ssid = keepConfigurationBinding ? getWiFiSSID() : String();
+        String password = keepConfigurationBinding ? getWiFiPassword() : String();
         prefs.clear();
+        if (!binding.isEmpty()) prefs.putString("game_cfg", binding);
+        if (!ssid.isEmpty()) setWiFiCredentials(ssid, password);
+    }
+
+    // Invalidate location indices, NPC assignment and badge sessions on a new catalog.
+    // Keep venue Wi-Fi and the operating mode across a game switch.
+    bool bindGameConfiguration(const String& binding) {
+        if (prefs.getString("game_cfg", "") == binding) return true;
+        String ssid = getWiFiSSID();
+        String password = getWiFiPassword();
+        int mode = getOperationalMode();
+        clearAll(false);
+        clearCompletedBadges();
+        if (!ssid.isEmpty()) setWiFiCredentials(ssid, password);
+        setOperationalMode(mode);
+        return prefs.putString("game_cfg", binding) == binding.length();
     }
     
     // Clear the completed badges namespace

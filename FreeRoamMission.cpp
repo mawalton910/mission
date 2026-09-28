@@ -39,8 +39,8 @@ String FreeRoamMission::displayNameForSpot(int spotIndex) const {
         return String(missionDisplayNames[spotIndex]);
     }
     int loc = (spotIndex >= 0 && spotIndex < REQUIRED_LOCATIONS) ? missionLocations[spotIndex] : 0;
-    if (loc < 0 || loc >= TOTAL_LOCATIONS) loc = 0;
-    return String(LOCATION_NAMES[loc]);
+    if (loc < 0 || loc >= missionLocationCount()) loc = 0;
+    return missionLocationName(loc);
 }
 
 void FreeRoamMission::setDisplayNameForSpot(int spotIndex, const String& name) {
@@ -48,8 +48,8 @@ void FreeRoamMission::setDisplayNameForSpot(int spotIndex, const String& name) {
     String clean = sanitizeMissionDisplayName(name);
     if (clean.length() == 0) {
         int loc = missionLocations[spotIndex];
-        if (loc < 0 || loc >= TOTAL_LOCATIONS) loc = 0;
-        clean = String(LOCATION_NAMES[loc]);
+        if (loc < 0 || loc >= missionLocationCount()) loc = 0;
+        clean = missionLocationName(loc);
     }
     clean.toCharArray(missionDisplayNames[spotIndex], MISSION_DISPLAY_NAME_MAX);
 }
@@ -113,7 +113,7 @@ bool FreeRoamMission::parseSavedMissionState(const String& saved) {
         tok.trim();
         if (tok.length() > 0) {
             int loc = tok.toInt();
-            if (loc < 0 || loc >= TOTAL_LOCATIONS) return false;
+            if (loc < 0 || loc >= missionLocationCount()) return false;
             parsedLocs[locCount++] = loc;
         }
         if (comma == -1) break;
@@ -158,7 +158,7 @@ bool FreeRoamMission::parseSavedMissionState(const String& saved) {
             if (hasNames && i < nameCount && parsedNames[i].length() > 0) {
                 setDisplayNameForSpot(i, parsedNames[i]);
             } else {
-                setDisplayNameForSpot(i, String(LOCATION_NAMES[missionLocations[i]]));
+                setDisplayNameForSpot(i, missionLocationName(missionLocations[i]));
             }
         }
     }
@@ -170,18 +170,20 @@ void FreeRoamMission::buildMissionSelection() {
         missionSpotVisited[i] = false;
     }
 
-    if (devMode) {
+    if (devMode && !REMOTE_GAME_CONFIGURATION) {
         // Dev mode forces all 4 spots to GURU_HOME.
         for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
             missionLocations[i] = TOTAL_LOCATIONS - 1;
-            setDisplayNameForSpot(i, String(LOCATION_NAMES[missionLocations[i]]));
+            setDisplayNameForSpot(i, missionLocationName(missionLocations[i]));
         }
         return;
     }
 
     // Production mode: pick 4 unique random POIs from non-dev locations.
-    const int prodCount = max(1, TOTAL_LOCATIONS - 1);
-    int pool[TOTAL_LOCATIONS];
+    const int prodCount = REMOTE_GAME_CONFIGURATION ? missionLocationCount() : TOTAL_LOCATIONS - 1;
+    if (prodCount <= 0) { activeSpotCount = 0; return; }
+    activeSpotCount = min(REQUIRED_LOCATIONS, prodCount);
+    int pool[MAX_GAME_POIS];
     for (int i = 0; i < prodCount; i++) pool[i] = i;
 
     for (int i = prodCount - 1; i > 0; i--) {
@@ -191,16 +193,16 @@ void FreeRoamMission::buildMissionSelection() {
         pool[j] = tmp;
     }
 
-    for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
-        missionLocations[i] = pool[i % prodCount];
-        setDisplayNameForSpot(i, String(LOCATION_NAMES[missionLocations[i]]));
+    for (int i = 0; i < activeSpotCount; i++) {
+        missionLocations[i] = pool[i];
+        setDisplayNameForSpot(i, missionLocationName(missionLocations[i]));
     }
 }
 
 // ---- setup ----
 
 void FreeRoamMission::setup() {
-    for (int i = 0; i < TOTAL_LOCATIONS; i++) poiVisited[i] = false;
+    for (int i = 0; i < MAX_GAME_POIS; i++) poiVisited[i] = false;
     visitedCount = 0;
     browseIndex = 0;
 
@@ -219,7 +221,7 @@ void FreeRoamMission::setup() {
     for (int i = 0; i < activeSpotCount; i++) {
         if (missionSpotVisited[i]) {
             int loc = missionLocations[i];
-            if (loc >= 0 && loc < TOTAL_LOCATIONS) {
+            if (loc >= 0 && loc < missionLocationCount()) {
                 if (!poiVisited[loc]) poiVisited[loc] = true;
                 visitedCount++;
                 browseIndex = i;
@@ -266,7 +268,7 @@ void FreeRoamMission::processLocation(String locationTag) {
     int spotIdx = -1;
     int locIdx = -1;
 
-    if (devMode) {
+    if (devMode && !REMOTE_GAME_CONFIGURATION) {
         spotIdx = findDevSpotForTag(locationTag);
         locIdx = TOTAL_LOCATIONS - 1;
         if (spotIdx < 0) {
@@ -357,20 +359,7 @@ void FreeRoamMission::drawProgressPips(int cx, int cy, int done, int activeIndex
 }
 
 int FreeRoamMission::findLocationForTag(const String& locationTag) const {
-    for (int locIdx = 0; locIdx < TOTAL_LOCATIONS; locIdx++) {
-        const LocationInfo& loc = POI_LOCATIONS[locIdx];
-        const String* tagSets[RESOURCE_COUNT] = {
-            loc.weaponTags, loc.securityTags, loc.vehicleTags, loc.moneyTags
-        };
-        for (int res = 0; res < RESOURCE_COUNT; res++) {
-            for (int t = 0; t < 3; t++) {
-                if (!tagSets[res][t].isEmpty() && locationTag == tagSets[res][t]) {
-                    return locIdx;
-                }
-            }
-        }
-    }
-    return -1;
+    return missionLocationForTag(locationTag);
 }
 
 // ---- updateDisplay ----
