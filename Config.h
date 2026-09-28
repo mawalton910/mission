@@ -3,7 +3,7 @@
 #include "secrets.h"
 
 // ===== FIRMWARE VERSION =====
-#define FIRMWARE_VERSION "POIStory v26.5.1"
+#define FIRMWARE_VERSION "POIStory v26.5.2"
 
 // Normal use: change only DEVICE_GAME_ID in your ignored secrets.h.
 // False is an explicit legacy/offline-table build, never an automatic fallback.

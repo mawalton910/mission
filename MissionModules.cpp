@@ -54,7 +54,8 @@ void MissionModules::begin() {
     Serial.printf("[RFID2] Port A SDA=%d SCL=%d VersionReg=0x%02X\n", M5.Ex_I2C.getSDA(), M5.Ex_I2C.getSCL(), version);
   }
   Serial.printf("[Modules] Unit NFC/RFID2 on Port A: %s\n", _nfcReady ? "ready" : "not found");
-  scanPortAI2c();
+  // Keep the full bus diagnostic opt-in (Serial: I2C). The reader probe above
+  // is all normal startup needs before drawing the mission screen.
 #endif
 }
 
@@ -92,11 +93,14 @@ void MissionModules::scanPortAI2c() const {
   const int scl = M5.getPin(m5::pin_name_t::port_a_scl);
   int found = 0;
   Serial.printf("[Modules] Port A I2C scan: SDA=%d SCL=%d addresses=", sda, scl);
-  for (uint8_t address = 1; address < 127; address++) {
+  // Match M5Unified's safe scan range. Probing reserved addresses 0x00-0x07
+  // can halt the ESP32-S3 before the display or Serial loop is initialized.
+  for (uint8_t address = 0x08; address < 0x78; address++) {
     if (M5.Ex_I2C.scanID(address)) {
       Serial.printf(" 0x%02X", address);
       found++;
     }
+    delay(1);
   }
   if (found == 0) Serial.print(" none");
   Serial.println();

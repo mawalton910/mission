@@ -3813,9 +3813,18 @@ void setup() {
     return true;
   });
 
-  Serial.printf("[BOOT] before tracker.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
+  M5Dial.Display.setBrightness(128);
+  M5Dial.Display.fillScreen(TFT_BLACK);
+  M5Dial.Display.setTextDatum(MC_DATUM);
+  M5Dial.Display.setTextSize(1);
+  M5Dial.Display.setTextColor(TFT_WHITE);
+  M5Dial.Display.drawString("Starting mission dial", 120, 110);
+  M5Dial.Display.drawString("Checking reader...", 120, 134);
+  Serial.printf("[BOOT] before missionModules.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
   missionModules.begin();
+  Serial.printf("[BOOT] after missionModules.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
   missionModules.printStatus();
+  Serial.printf("[BOOT] before tracker.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
   tracker.begin();
   Serial.printf("[BOOT] after tracker.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
   Serial.printf("[BOOT] before restoreFromSavedSnapshot heap=%u\n", (unsigned)ESP.getFreeHeap());
