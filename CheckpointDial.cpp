@@ -1,5 +1,6 @@
 #include "CheckpointDial.h"
 #include "GameConfiguration.h"
+#include "BadgeCatalog.h"
 #include "DialScreen.h"
 #include <esp_system.h>
 #include <SPIFFS.h>
@@ -47,6 +48,7 @@ bool CheckpointDial::persist() {
 }
 void CheckpointDial::begin(const String& game) {
   gameId = game;
+  badgeCatalog.load(game);
   if (!SPIFFS.begin(false)) { storageReady = false; return; }
   String json;
   for (const char* path : RUN_SLOTS) {
@@ -61,13 +63,14 @@ void CheckpointDial::begin(const String& game) {
   }
   // A reset must never restart the clock or silently discard offline progress.
   if (hasUnpaidRun()) { frozen = true; saved["frozen"] = true; persist(); }
-  encoder = M5Dial.Encoder.read(); tick = millis(); lastSave = tick;
+  encoder = M5Dial.Encoder.read(); tick = millis(); lastSave = tick; lastScroll = tick - 300;
   dirty = true;
 }
 bool CheckpointDial::hasUnpaidRun() const { return String(saved["run_id"] | "").length() && !(saved["paid"] | false); }
 bool CheckpointDial::reset(bool factory) {
   if (hasUnpaidRun() && !factory) { show("RUN SAVED", "Return to your NPC before resetting."); return false; }
   if (factory) {
+    if (!badgeCatalog.clear()) return false;
     // Also works when boot configuration failed before begin() read the journal.
     // Erase both generations so an old run cannot return after a factory reset.
     if (!SPIFFS.begin(false)) return false;
@@ -97,6 +100,7 @@ void CheckpointDial::tag(const String& raw, const std::function<bool()>& connect
   update();
   const String tag = GameConfiguration::normalizeUid(raw);
   if (tag.isEmpty()) { show("TAG NOT READ", "Scan the card again."); return; }
+  if (const char* role = reservedGameTagRole(tag)) { show("CONTROL CARD", String(role) + ": use the admin controls."); return; }
   bool npc = !gameConfiguration.npcIdForTag(tag).isEmpty();
   bool completion = gameConfiguration.isCompletionTag(tag);
   // A cached run keeps its original checkpoint if Creator edits the catalog later.
@@ -107,7 +111,8 @@ void CheckpointDial::tag(const String& raw, const std::function<bool()>& connect
     bool assigned = false;
     for (JsonObjectConst poi : saved["pois"].as<JsonArrayConst>()) if (String(poi["uuid"] | "") == tag) assigned = true;
     if (!assigned) {
-      if (gameConfiguration.findUuid(tag) >= 0) { show("NOT A MISSION STOP", "Rotate the dial to see your assigned POIs."); return; }
+      int knownPoi = gameConfiguration.findUuid(tag);
+      if (knownPoi >= 0) { show("OTHER LOCATION", gameConfiguration.poiName(knownPoi) + ": not one of your four stops."); return; }
       if (String(saved["roster_policy"] | "starting_crew") != "final_crew") { show("CREW LOCKED", "Finish this older run first. The next run allows helpers to join."); return; }
       toggleBadge(tag); return;
     }
@@ -123,8 +128,8 @@ void CheckpointDial::tag(const String& raw, const std::function<bool()>& connect
   toggleBadge(tag);
 }
 void CheckpointDial::toggleBadge(const String& tag) {
-  // Crew changes are local and durable. The server validates these badges only
-  // when the final roster returns to the connected checkpoint.
+  // Always allow an old/rejected roster entry to check out. New joins need a
+  // game-specific verified ID; a hexadecimal UID alone does not prove a badge.
   JsonArray roster = saved["roster"].as<JsonArray>();
   for (unsigned i = 0; i < roster.size(); ++i) if (roster[i].as<String>() == tag) {
     String previous; serializeJson(saved, previous);
@@ -133,6 +138,8 @@ void CheckpointDial::toggleBadge(const String& tag) {
     if (!persist()) { deserializeJson(saved, previous); show("STORAGE ERROR", "Badge was not removed. Try again."); return; }
     show("CHECKED OUT", tag + ": no reward. " + String(roster.size()) + " still in", 2200); return;
   }
+  if (!badgeCatalog.ready()) { show("SCAN NPC FIRST", "Download this game's badge list at the connected checkpoint."); return; }
+  if (!badgeCatalog.contains(tag)) { show("BADGE NOT RECOGNIZED", "Not added. Use a linked game badge. New badge? Refresh at the NPC."); return; }
   if (roster.size() >= 8) { show("CREW FULL", "Up to eight badges can join."); return; }
   String previous; serializeJson(saved, previous);
   saved.remove("last_paid");
@@ -149,6 +156,8 @@ void CheckpointDial::checkpoint(const String& tag, const std::function<bool()>& 
   DialScreen::message("AT THE CHECKPOINT", "Connecting", "Keep the dial here");
   if (!connect()) { disconnect(); show("NO CONNECTION", "Progress is safe. Stay at the checkpoint and scan again."); return; }
   if (hasUnpaidRun() && !finish(tag)) { disconnect(); return; }
+  DialScreen::message("CHECKING GAME BADGES", "Updating the offline list", "Keep the dial at the checkpoint");
+  if (!badgeCatalog.refresh(gameId)) { disconnect(); show("BADGE LIST NOT UPDATED", badgeCatalog.error(), 7000); return; }
   start(source);
   disconnect();
   tick = millis(); lastSave = tick;
@@ -231,11 +240,14 @@ bool CheckpointDial::start(const String& source) {
   Serial.println("[MISSION] Assignment saved: 4 POIs. Visit offline, then return to " + String(saved["npc_name"] | "your NPC"));
   return true;
 }
-void CheckpointDial::press() { page = page < 4 ? 4 : page == 4 ? 5 : 0; dirty = true; noticeUntil = 0; }
+void CheckpointDial::press() { page = page < 4 ? 4 : page == 4 ? 5 : 0; encoder = M5Dial.Encoder.read(); lastScroll = millis(); dirty = true; noticeUntil = 0; }
 void CheckpointDial::update() {
   unsigned long now = millis();
   long current = M5Dial.Encoder.read();
-  if (abs(current - encoder) >= 2) { page = (page + (current > encoder ? 1 : 5)) % 6; encoder = current; dirty = true; noticeUntil = 0; }
+  // Four encoder counts per page, with no queued spin-through after a fast turn.
+  // Counts during the cooldown are consumed so a stationary dial cannot jump later.
+  if (now - lastScroll < 300) encoder = current;
+  else if (abs(current - encoder) >= 4) { page = (page + (current > encoder ? 1 : 5)) % 6; encoder = current; lastScroll = now; dirty = true; noticeUntil = 0; }
   if (hasUnpaidRun() && !frozen && now - tick >= 1000) {
     unsigned long remaining = saved["remaining_ms"] | 0UL, elapsed = now - tick;
     saved["remaining_ms"] = remaining > elapsed ? remaining - elapsed : 0UL;
