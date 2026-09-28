@@ -324,7 +324,7 @@ String GameConfiguration::factionName(const String& id) const {
   return "";
 }
 void GameConfiguration::printStatus() const {
-  Serial.printf("[CONFIG] ready=%s game=%s name=%s POIs=%u factions=%u NPCs=%u\n", valid ? "yes" : "no", gameId.c_str(), gameName.c_str(), unsigned(pois.size()), unsigned(factions.size()), unsigned(npcs.size()));
+  Serial.printf("[CONFIG] ready=%s game=%s name=%s POIs=%u factions=%u missionCards=%u completionCards=%u\n", valid ? "yes" : "no", gameId.c_str(), gameName.c_str(), unsigned(pois.size()), unsigned(factions.size()), unsigned(npcs.size() + missionTags.size()), unsigned(completionTags.size()));
   if (!lastError.isEmpty()) Serial.println("[CONFIG] " + lastError);
 }
 

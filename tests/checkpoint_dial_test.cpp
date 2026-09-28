@@ -69,6 +69,13 @@ int main() {
   size_t before = calls.size(); reboot.tag("FAAC1307", online, disconnect);
   assert(calls.size()==before+1 && calls.back()=="start"); assert(String(reboot.saved["request_id"] | "")==pending);
   fakeMillis += 10000; reboot.update(); screenshot("next-round");
+  storage.rejectWrite = true;
+  reboot.tag("AABBCCDD", online, disconnect);
+  assert(reboot.saved["roster"].size()==1 && String(reboot.saved["request_id"] | "")==pending);
+  storage.rejectWrite = false;
+  reboot.tag("AABBCCDD", online, disconnect);
+  assert(reboot.saved["roster"].size()==0 && reboot.saved["last_paid"].isNull());
+  assert(reboot.saved["request_id"].isNull());
   CheckpointDial different; different.begin("222222222222222222222222"); assert(!different.hasUnpaidRun()); assert(different.saved["roster"].size()==0);
   different.saved["large_reward_fixture"] = String(5000, 'x'); assert(different.persist());
   CheckpointDial large; large.begin("222222222222222222222222"); assert(large.saved["large_reward_fixture"].as<String>().length()==5000);

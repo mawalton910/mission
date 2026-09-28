@@ -117,14 +117,18 @@ void CheckpointDial::tag(const String& raw, const std::function<bool()>& connect
   if (gameConfiguration.findUuid(tag) >= 0) { show("START AT YOUR NPC", "Scan player badges, then the NPC mission card."); return; }
   // Until a manifest is accepted there are no earned visits to lose. Changing
   // the crew may abandon an uncertain empty assignment, never a paid run.
-  saved.remove("request_id");
   JsonArray roster = saved["roster"].as<JsonArray>();
   for (unsigned i = 0; i < roster.size(); ++i) if (roster[i].as<String>() == tag) {
-    roster.remove(i); persist(); show("PLAYER REMOVED", String(roster.size()) + " badges ready", 1200); return;
+    String previous; serializeJson(saved, previous);
+    roster.remove(i); saved.remove("request_id"); saved.remove("last_paid");
+    if (!persist()) { deserializeJson(saved, previous); show("STORAGE ERROR", "Badge was not removed. Try again."); return; }
+    show("PLAYER REMOVED", String(roster.size()) + " badges ready", 1200); return;
   }
   if (roster.size() >= 8) { show("CREW FULL", "Up to eight badges can join."); return; }
+  String previous; serializeJson(saved, previous);
+  saved.remove("request_id"); saved.remove("last_paid");
   roster.add(tag);
-  if (!persist()) { roster.remove(roster.size() - 1); show("STORAGE ERROR", "Badge was not saved. Try again."); return; }
+  if (!persist()) { deserializeJson(saved, previous); show("STORAGE ERROR", "Badge was not saved. Try again."); return; }
   show("BADGE ADDED", String(roster.size()) + " ready. Scan your NPC to start.", 1500);
 }
 void CheckpointDial::checkpoint(const String& tag, const std::function<bool()>& connect, const std::function<void()>& disconnect) {
