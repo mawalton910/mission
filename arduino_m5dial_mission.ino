@@ -18,10 +18,14 @@
 
 #include <Arduino.h>
 #include <M5Dial.h>
+#include <M5Unified.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <M5UnitUnified.h>
+#include <M5UnitUnifiedNFC.h>
+#include <M5Utility.h>
 #include <map>
 #include <set>
 #include <vector>
@@ -36,11 +40,15 @@
 #include "OTAUpdate.h"
 #include "GuruLogo.h"
 #include "Sounds.h"
+#include "MissionModules.h"
+#include "SafeCrackMiniGame.h"
 #include <unit_audioplayer.hpp>
 
 // ===== External AudioPlayer (Unit AudioPlayer on Port B) =====
 AudioPlayerUnit audioPlayer;
 bool audioPlayerReady = false;
+MissionModules missionModules;
+SafeCrackMiniGame safeCrack(missionModules);
 
 // ===== WiFi credentials (editable per deployment) =====
 const char* WIFI_SSID     = DEFAULT_WIFI_SSID;
@@ -334,7 +342,8 @@ enum TrackerState : int {
   WIFI_CONFIG,
   CONFIRM_PLAYERS,
   RELAY_WAIT_BADGE,
-  WAIT_FOR_NPC_TOKEN
+  WAIT_FOR_NPC_TOKEN,
+  SAFE_CRACK
 };
 
 const char* stateName(TrackerState s) {
@@ -347,6 +356,7 @@ const char* stateName(TrackerState s) {
     case WIFI_CONFIG:          return "WIFI_CONFIG";
     case CONFIRM_PLAYERS:      return "CONFIRM_PLAYERS";
     case RELAY_WAIT_BADGE:     return "RELAY_WAIT_BADGE";
+    case SAFE_CRACK:           return "SAFE_CRACK";
     default:                   return "UNKNOWN";
   }
 }
@@ -534,8 +544,8 @@ public:
       Serial.printf("[UI] %lums  Confirm acknowledged - deploying\n", millis());
       playConfirmSelectTone();
       displayMultiLineMessage("PLAYERS CONFIRMED", "DEPLOYING...", COLOR_INFO);
-      delay(220);
-      grantNpcStarterRewardsToConfirmedPlayers();
+      pendingNpcStarterRewards = playerCount > 0 && storyNpcRewardSpec.length() > 0;
+      pendingNpcStarterRewardsAt = millis() + 2000UL;
       if (currentMode == MODE_STORY_MISSION_WIDGET) {
         trackerState = WAIT_FOR_MISSION_CARD;
         displayMultiLineMessage("STORY ROUND", "SCAN MISSION UUID", COLOR_INFO);
@@ -553,14 +563,12 @@ public:
     if (trackerState != CONFIRM_PLAYERS) return false;
 
     int cx = M5Dial.Display.width() / 2;
-    bool yesTap = (x >= cx - 55 && x <= cx + 55 && y >= 105 && y <= 141);
-    bool noTap  = (x >= cx - 55 && x <= cx + 55 && y >= 153 && y <= 189);
+    bool yesTap = (y >= 96 && y <= 149);
+    bool noTap  = (y >= 150 && y <= 205);
 
     if (!yesTap && !noTap) return false;
 
     confirmSelection = yesTap ? 0 : 1;
-    displayConfirmPlayers();
-    playConfirmSelectTone();
     applyConfirmPlayersSelection();
     return true;
   }
@@ -746,6 +754,10 @@ public:
   // processCardScan() Ã¢â‚¬â€ main RFID dispatch
   // ============================================================
   void processCardScan(String cardUID) {
+    if (trackerState == SAFE_CRACK) {
+      safeCrack.handleBadge(cardUID);
+      return;
+    }
     static String lastScannedTag = "";
     if (cardUID != lastScannedTag) {
       stateManager.saveSessionSnapshot(
@@ -953,7 +965,7 @@ public:
       playerUUIDs[playerCount++] = cardUID;
       Serial.printf("[ACTION] %lums  Player %d registered: %s\n", millis(), playerCount, cardUID.c_str());
       logger.log("Player " + String(playerCount) + ": " + cardUID);
-      displayMessage("Player Added", COLOR_SUCCESS, 1500);
+      playSuccessTone();
       displayPlayerRegistration();
       currentBadgeUID = playerUUIDs[0];
       persistPlayerList();
@@ -1082,6 +1094,11 @@ public:
   void handleButtonPress() {
     Serial.printf("[ACTION] %lums  Button pressed (state: %s)\n", millis(), stateName(trackerState));
 
+    if (trackerState == SAFE_CRACK) {
+      safeCrack.handleConfirm();
+      return;
+    }
+
     // Admin mode button
     if (trackerState == ADMIN_MODE) {
       if (!adminInMenu) {
@@ -1146,11 +1163,29 @@ public:
   // update() Ã¢â‚¬â€ called every loop iteration
   // ============================================================
   void update() {
+    if (trackerState == SAFE_CRACK) {
+      safeCrack.update();
+      if (safeCrack.isFinished()) {
+        trackerState = ADMIN_MODE;
+        adminInMenu = true;
+        adminMenuSelection = 8;
+        displayAdminMode();
+      }
+      return;
+    }
+
     if (currentMode == MODE_RELAY && WiFi.status() != WL_CONNECTED && millis() - lastWiFiReconnectAttemptMs >= WIFI_BACKGROUND_RECONNECT_INTERVAL_MS) {
       lastWiFiReconnectAttemptMs = millis();
       Serial.printf("[WIFI] %lums  Background reconnect attempt\n", millis());
       logger.log("WiFi: background reconnect");
       WiFi.reconnect();
+    }
+
+    if (pendingNpcStarterRewards && trackerState == RUN_MISSION && currentMission &&
+        (long)(millis() - pendingNpcStarterRewardsAt) >= 0) {
+      pendingNpcStarterRewards = false;
+      Serial.printf("[NPC REWARD] %lums  Delivering queued starter rewards\n", millis());
+      grantNpcStarterRewardsToConfirmedPlayers();
     }
 
     // Screen timeout
@@ -1323,10 +1358,11 @@ public:
       {"L", 0x2104,        "VIEW","LOG",       "Mission event history", TFT_YELLOW},
       {"?", TFT_DARKCYAN,  "SCAN TAG","INFO",  "Identify any card", TFT_CYAN},
       {"N", TFT_DARKGREEN, "NPC TAG","RESET",  "Clear saved NPC assignment", TFT_GREEN},
+      {"C", TFT_MAROON,    "SAFE","CRACK",     "Launch the vault mini-game", TFT_ORANGE},
       {"X", TFT_BLACK,     "EXIT","ADMIN",     "Return to Main", TFT_WHITE},
     };
 
-    if (adminMenuSelection == 8) {
+    if (adminMenuSelection == 9) {
       // Exit icon
       M5Dial.Lcd.drawRect(cx - 20, cy - 35, 40, 50, TFT_RED);
       M5Dial.Lcd.drawLine(cx - 20, cy - 10, cx + 20, cy - 10, TFT_RED);
@@ -2245,6 +2281,8 @@ private:
   String storyNpcLootId;
   String storyNpcRewardSpec;
   std::set<String> npcStarterRewardGrantedBadges;
+  bool pendingNpcStarterRewards = false;
+  unsigned long pendingNpcStarterRewardsAt = 0;
   bool relayLastSuccess = false;
   unsigned long lastActivityMs = 0;
   unsigned long lastWiFiReconnectAttemptMs = 0;
@@ -2407,14 +2445,14 @@ private:
     return code > 0;
   }
 
-  void grantNpcStarterRewardsToBadge(const String& badgeUuid) {
+  void grantNpcStarterRewardsToBadge(const String& badgeUuid, bool keepWiFiConnected = false) {
     String normalizedBadge = removeSpaces(badgeUuid);
     if (normalizedBadge.length() == 0 || storyNpcRewardSpec.length() == 0) return;
     if (npcStarterRewardGrantedBadges.count(normalizedBadge)) return;
 
     if (!connectToWiFi()) {
       logger.log("NPC reward grant: WiFi unavailable");
-      shutdownWiFi();
+      if (!keepWiFiConnected) shutdownWiFi();
       return;
     }
 
@@ -2426,7 +2464,7 @@ private:
     DynamicJsonDocument rewardsDoc(1024);
     if (deserializeJson(rewardsDoc, storyNpcRewardSpec)) {
       logger.log("NPC rewards grant parse failed");
-      shutdownWiFi();
+      if (!keepWiFiConnected) shutdownWiFi();
       return;
     }
 
@@ -2450,7 +2488,7 @@ private:
       }
     }
 
-    shutdownWiFi();
+    if (!keepWiFiConnected) shutdownWiFi();
     if (sawReward && allOk) {
       npcStarterRewardGrantedBadges.insert(normalizedBadge);
       logger.log("NPC rewards granted to badge: " + normalizedBadge);
@@ -2462,10 +2500,16 @@ private:
 
   void grantNpcStarterRewardsToConfirmedPlayers() {
     if (playerCount <= 0 || storyNpcRewardSpec.length() == 0) return;
+    if (!connectToWiFi()) {
+      logger.log("NPC reward grant: WiFi unavailable");
+      shutdownWiFi();
+      return;
+    }
     for (int i = 0; i < playerCount; i++) {
       if (playerUUIDs[i].length() == 0) continue;
-      grantNpcStarterRewardsToBadge(playerUUIDs[i]);
+      grantNpcStarterRewardsToBadge(playerUUIDs[i], true);
     }
+    shutdownWiFi();
   }
 
   static bool jsonArrayHasText(const JsonArray& arr, const char* wanted) {
@@ -2844,7 +2888,6 @@ private:
     if (showSplash) {
       Serial.printf("[STORY] %lums  Showing mission start screen\n", millis());
       drawMissionStartingScreen();
-      delay(900);
     }
     Serial.printf("[STORY] %lums  Connecting to WiFi for round manifest\n", millis());
     if (!connectToWiFi()) {
@@ -3112,7 +3155,7 @@ private:
                   returnedMissionName.c_str(), returnedNpcName.c_str(),
                   roundKey.c_str());
 
-    shutdownWiFi();
+    if (!pendingNpcStarterRewards) shutdownWiFi();
     playSound(SND_BADGE_SCAN, SND_BADGE_SCAN_LEN, 255, "BADGE_SCAN", EXT_BADGE_SCAN);
     startMission(new FreeRoamMission(stateManager), nullptr);
   }
@@ -3193,7 +3236,12 @@ private:
         adminInMenu = true;
         displayScanNpcToken();
         break;
-      case 8: exitAdminMode(); break;
+      case 8:
+        logger.log("Admin: Safe Crack launched");
+        trackerState = SAFE_CRACK;
+        safeCrack.begin();
+        break;
+      case 9: exitAdminMode(); break;
     }
   }
 
@@ -3392,6 +3440,19 @@ StoryTracker tracker;
 
 unsigned long buttonPressStartTime = 0;
 bool buttonHeldForAdmin = false;
+bool buttonActionDispatched = false;
+
+bool shouldProcessCardScan(const String& cardUID) {
+  static String lastUid;
+  static unsigned long lastScanAt = 0;
+  String normalized = cardUID;
+  normalized.replace(" ", "");
+  unsigned long now = millis();
+  if (normalized == lastUid && now - lastScanAt < 1000UL) return false;
+  lastUid = normalized;
+  lastScanAt = now;
+  return true;
+}
 
 String formatUidForScan(String raw) {
   raw.trim();
@@ -3423,6 +3484,8 @@ void printSerialCommandHelp() {
   Serial.println("  NPCCLEAR            - clear saved NPC assignment");
   Serial.println("  MODE:<name>         - set mode MISSION|STORY|RELAY");
   Serial.println("  SCAN:<uid>          - simulate RFID scan");
+  Serial.println("  MODULES             - print Port A NFC/RFID2 and Port B RGB status");
+  Serial.println("  I2C                 - scan the Port A I2C bus");
   Serial.println("  Examples: SCAN:FAAC1307 | SCAN: FA AC 13 07");
 }
 
@@ -3465,6 +3528,16 @@ void handleSerialCommand(String line) {
     Serial.println("[SERIAL CMD] Clearing NPC assignment");
     tracker.debugClearNpcAssignment();
     tracker.bumpActivity();
+    return;
+  }
+
+  if (upper == "MODULES") {
+    missionModules.printStatus();
+    return;
+  }
+
+  if (upper == "I2C") {
+    missionModules.scanPortAI2c();
     return;
   }
 
@@ -3568,6 +3641,8 @@ void setup() {
   });
 
   Serial.printf("[BOOT] before tracker.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
+  missionModules.begin();
+  missionModules.printStatus();
   tracker.begin();
   Serial.printf("[BOOT] after tracker.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
   Serial.printf("[BOOT] before restoreFromSavedSnapshot heap=%u\n", (unsigned)ESP.getFreeHeap());
@@ -3579,6 +3654,9 @@ void setup() {
 
 void loop() {
   M5Dial.update();
+  missionModules.update();
+  const auto& touch = M5Dial.Touch.getDetail();
+  const bool touchBegan = touch.wasPressed();
   // NOTE: do NOT call audioPlayer.update() here Ã¢â‚¬â€ it races with
   // waitForResponse() inside playAudioByName, stealing response bytes
 
@@ -3589,7 +3667,7 @@ void loop() {
     long enc = M5Dial.Encoder.read();
     if (enc != _lastEnc) { _lastEnc = enc; any = true; }
     if (M5Dial.BtnA.isPressed()) any = true;
-    if (M5Dial.Touch.getDetail().wasPressed()) any = true;
+    if (touchBegan) any = true;
     if (any) tracker.bumpActivity();
   }
 
@@ -3612,7 +3690,14 @@ void loop() {
 
   // Button hold actions (admin + mission overlay toggle)
   if (M5Dial.BtnA.isPressed()) {
-    if (buttonPressStartTime == 0) buttonPressStartTime = millis();
+    if (buttonPressStartTime == 0) {
+      buttonPressStartTime = millis();
+      if (tracker.trackerState == CONFIRM_PLAYERS ||
+          (tracker.trackerState == WAIT_FOR_BADGE && tracker.getPlayerCount() > 0)) {
+        tracker.handleButtonPress();
+        buttonActionDispatched = true;
+      }
+    }
     else if (!buttonHeldForAdmin) {
       unsigned long heldMs = millis() - buttonPressStartTime;
       if (tracker.trackerState == RUN_MISSION && tracker.canToggleMissionOverlayByHold() && heldMs >= 3000UL) {
@@ -3629,22 +3714,20 @@ void loop() {
       }
     }
   } else {
-    if (buttonPressStartTime > 0 && !buttonHeldForAdmin) { delay(300); tracker.handleButtonPress(); }
-    buttonPressStartTime = 0; buttonHeldForAdmin = false;
+    if (buttonPressStartTime > 0 && !buttonHeldForAdmin && !buttonActionDispatched) { tracker.handleButtonPress(); }
+    buttonPressStartTime = 0; buttonHeldForAdmin = false; buttonActionDispatched = false;
   }
 
   // Touch Ã¢â€ â€™ confirm players
-  auto touch = M5Dial.Touch.getDetail();
-  if (touch.wasPressed()) {
+  if (touchBegan) {
     if (tracker.trackerState == RUN_MISSION && tracker.handleMissionOverlayTouch(touch.x, touch.y)) {
       tracker.bumpActivity();
       delay(150);
     } else if (tracker.trackerState == CONFIRM_PLAYERS) {
       if (tracker.handleConfirmPlayersTouch(touch.x, touch.y)) {
-        delay(250);
       }
     } else if (tracker.trackerState == WAIT_FOR_BADGE && tracker.getPlayerCount() > 0) {
-      tracker.advanceFromBadgeScreen(); delay(300);
+      tracker.advanceFromBadgeScreen();
     }
   }
 
@@ -3672,10 +3755,21 @@ void loop() {
     }
     cardUID.toUpperCase();
     String sanitized = cardUID; sanitized.replace(" ","");
-    if (isOTAUpdateTag(sanitized)) { triggerGitHubUpdate(); return; }
-    tracker.processCardScan(cardUID);
+    if (shouldProcessCardScan(cardUID)) {
+      if (tracker.trackerState == SAFE_CRACK) {
+        safeCrack.handleBadge(cardUID);
+      } else {
+        if (isOTAUpdateTag(sanitized)) { triggerGitHubUpdate(); return; }
+        tracker.processCardScan(cardUID);
+      }
+      tracker.bumpActivity();
+    }
+  }
+
+  String externalCardUID;
+  if (missionModules.pollExternalNfc(externalCardUID) && shouldProcessCardScan(externalCardUID)) {
+    tracker.processCardScan(externalCardUID);
     tracker.bumpActivity();
-    delay(1000);
   }
 
   tracker.update();

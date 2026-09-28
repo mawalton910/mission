@@ -29,8 +29,21 @@ const bool STORY_MODE_ON_BOOT = false;
 // ===== ADMIN CONFIGURATION =====
 #define ADMIN_BUTTON_HOLD_TIME 10000     // Hold button for 10 seconds to enter admin
 #define ADMIN_EXIT_TIMEOUT 30000        // Auto-exit after 30s inactivity
-#define ADMIN_MENU_ITEMS 9              // Device Info, Mission, Story Round, Relay, Dev Mode, Log, Scan Tag, NPC Tag, Exit
+#define ADMIN_MENU_ITEMS 10             // Device Info, Mission, Story Round, Relay, Dev Mode, Log, Scan Tag, NPC Tag, Safe Crack, Exit
 #define ADMIN_MENU_SCROLL_DELAY 100     // Scroll delay in ms
+
+// ===== OPTIONAL EXTERNAL MODULES =====
+// Port A: Unit NFC/RFID2 (I2C). Port B: Unit RGB (SK6812 data on GPIO2).
+// The RGB Unit and Unit AudioPlayer both use Port B, so only one may be enabled.
+#ifndef ENABLE_EXTERNAL_NFC
+#define ENABLE_EXTERNAL_NFC 1
+#endif
+#ifndef ENABLE_UNIT_RGB
+#define ENABLE_UNIT_RGB 1
+#endif
+#if ENABLE_UNIT_AUDIO && ENABLE_UNIT_RGB
+#error "Port B cannot run Unit AudioPlayer and Unit RGB simultaneously. Disable one module."
+#endif
 
 // ===== DEVICE CONFIGURATION =====
 // Using values from secrets.h
