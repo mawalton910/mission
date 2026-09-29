@@ -4,6 +4,7 @@
 #include "MissionDeviceAuth.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <WiFi.h>
 #endif
 #include <SPIFFS.h>
 #include <time.h>
@@ -42,7 +43,7 @@ DeserializationError readConfigurationJson(DynamicJsonDocument& doc, const Strin
   }
   return DeserializationError::NoMemory;
 }
-#ifndef MISSION_CONFIG_HOST_TEST
+#if !defined(MISSION_CONFIG_HOST_TEST) || defined(MISSION_TRANSPORT_HOST_TEST)
 String urlEncode(const String& value) {
   String result;
   for (size_t i = 0; i < value.length(); ++i) {
@@ -70,12 +71,71 @@ class LimitedResponse : public Stream {
   int peek() override { return -1; }
   void flush() override {}
 };
-bool response(HTTPClient& http, String& text, size_t max) {
-  if (http.getSize() > static_cast<int>(max)) return false;
-  LimitedResponse output(max);
-  if (http.writeToStream(&output) < 0 || output.exceeded) return false;
-  text = std::move(output.body);
-  return true;
+constexpr unsigned REQUEST_ATTEMPTS = 3;
+bool transientStatus(int status) {
+  return status == -1 || status == -2 || status == -3 || status == -4 || status == -5 || status == -7 || status == -11 ||
+         status == 408 || status == 500 || status == 502 || status == 503 || status == 504;
+}
+// These actions are read-only, or use a durable ID to recover the same server
+// result. Never replay an arbitrary action after an ambiguous POST failure.
+bool replaySafe(const char* action, JsonObjectConst payload) {
+  if (!strcmp(action, "missionGameConfiguration")) return true;
+  if (strcmp(action, "missionCheckpoint")) return false;
+  const String operation = payload["operation"] | "";
+  return operation == "badge_catalog" ||
+         (operation == "start" && hexId(payload["request_id"] | "", 32)) ||
+         (operation == "finish" && hexId(payload["run_id"] | "", 64));
+}
+struct HttpResponse {
+  int status = 0;
+  bool received = false, retryable = false, oversized = false;
+  String body;
+};
+HttpResponse exchange(const String& url, const String* payload, size_t max,
+                      const char* action, const char* operation, unsigned attempt) {
+  // Each request owns a fresh connection. Release TLS before parsing/signing,
+  // and never carry a failed socket into the next challenge or action.
+  HttpResponse result;
+  WiFiClientSecure tls;
+  tls.setCACert(ROOT_CA_PEM);
+  tls.setHandshakeTimeout(10);
+  HTTPClient http;
+  http.setReuse(false);
+  http.setConnectTimeout(10000);
+  http.setTimeout(10000);
+  int readError = 0;
+  if (http.begin(tls, url)) {
+    if (payload) http.addHeader("Content-Type", "application/json");
+    result.status = payload ? http.POST(*payload) : http.GET();
+    if (result.status > 0) {
+      result.oversized = http.getSize() > static_cast<int>(max);
+      if (!result.oversized) {
+        LimitedResponse output(max);
+        readError = http.writeToStream(&output);
+        result.oversized = output.exceeded;
+        result.received = readError >= 0 && !output.exceeded;
+        if (result.received) result.body = std::move(output.body);
+      }
+    }
+  }
+  result.retryable = !result.oversized && (transientStatus(result.status) ||
+    (result.status == 200 && !result.received && transientStatus(readError)));
+  if (result.status != 200 || !result.received) {
+    char tlsDetail[120] = {};
+    const int tlsError = tls.lastError(tlsDetail, sizeof(tlsDetail));
+    Serial.printf("[NET] %s action=%s op=%s attempt=%u/%u HTTP=%d (%s) read=%d TLS=%d (%s) RSSI=%d heap=%u largest=%u oversized=%s\n",
+      payload ? "action" : "challenge", action, operation, attempt, REQUEST_ATTEMPTS,
+      result.status, result.status < 0 ? HTTPClient::errorToString(result.status).c_str() : "HTTP response",
+      readError, tlsError, tlsDetail, int(WiFi.RSSI()), unsigned(ESP.getFreeHeap()),
+      unsigned(ESP.getMaxAllocHeap()), result.oversized ? "yes" : "no");
+  }
+  http.end();
+  tls.stop();
+  return result;
+}
+void pauseBeforeRetry(unsigned attempt) {
+  Serial.printf("[NET] Retrying checkpoint connection (%u/%u)\n", attempt + 1, REQUEST_ATTEMPTS);
+  delay(attempt * 500);
 }
 #endif
 }
@@ -217,13 +277,10 @@ bool GameConfiguration::clear() {
   return ok;
 }
 
-#ifndef MISSION_CONFIG_HOST_TEST
+#if !defined(MISSION_CONFIG_HOST_TEST) || defined(MISSION_TRANSPORT_HOST_TEST)
 bool GameConfiguration::requestAction(const char* action, JsonObjectConst actionPayload, String& responseBody) {
-  String body;
-  int status = 0;
-  // Keep only the bounded response after the request. Even stopped TLS clients,
-  // HTTP headers and the signed request can fragment the small ESP32-S3 heap.
-  {
+  responseBody = "";
+  lastError = "";
   String endpoint = STORY_ROUND_ENDPOINT;
   int slash = endpoint.indexOf('/', 8);
   if (!endpoint.startsWith("https://") || slash < 0) { lastError = "HTTPS server required"; return false; }
@@ -235,63 +292,80 @@ bool GameConfiguration::requestAction(const char* action, JsonObjectConst action
     while (time(nullptr) < 1704067200 && millis() - start < 10000) delay(50);
   }
   if (time(nullptr) < 1704067200) { lastError = "Clock sync failed; retry"; return false; }
-  WiFiClientSecure tls;
-  tls.setCACert(ROOT_CA_PEM);
-  tls.setHandshakeTimeout(10);
-  HTTPClient http;
-  http.setTimeout(10000);
-  String challengeUrl = base + "/challenge?mac_address=" + urlEncode(DEVICE_MAC_ADDR) + "&serial_number=" + urlEncode(DEVICE_SERIAL_NUM);
-  lastError = "Device connection failed";
-  if (!http.begin(tls, challengeUrl)) return false;
-  status = http.GET();
-  bool received = status == 200 && response(http, body, 2048);
-  http.end();
-  if (!received) { lastError = "Device challenge failed: " + String(status); return false; }
-  DynamicJsonDocument request(4096);
-  {
-    DynamicJsonDocument challenge(2048);
-    if (deserializeJson(challenge, body)) return false;
-    MissionDeviceAuth::acceptChallenge(challenge.as<JsonVariantConst>());
-    request["challenge_nonce"] = challenge["auth"]["nonce"];
-  }
-  request["mac_address"] = DEVICE_MAC_ADDR;
-  request["serial_number"] = DEVICE_SERIAL_NUM;
-  String firmware = FIRMWARE_VERSION; firmware.trim();
-  request["firmware_version"] = firmware;
-  request["action"] = action;
-  request["payload"].set(actionPayload);
-  bool signedRequest = MissionDeviceAuth::appendProof(request.as<JsonObject>(), DEVICE_MAC_ADDR, DEVICE_SERIAL_NUM, firmware);
-  MissionDeviceAuth::clearChallenge();
-  if (!signedRequest) { lastError = "Provision device key first"; return false; }
-  String payload; serializeJson(request, payload);
-  if (!http.begin(tls, base + "/action")) return false;
-  http.addHeader("Content-Type", "application/json");
-  status = http.POST(payload);
-  received = status > 0 && response(http, body, MAX_GAME_CONFIG_BYTES + 1024);
-  http.end();
-  if (!received) { lastError = "Config download failed: " + String(status); return false; }
-  } // Destroy TLS, HTTP and signing buffers before allocating the JSON pool.
-
-  {
+  const String challengeUrl = base + "/challenge?mac_address=" + urlEncode(DEVICE_MAC_ADDR) + "&serial_number=" + urlEncode(DEVICE_SERIAL_NUM);
+  const bool canReplay = replaySafe(action, actionPayload);
+  const char* operation = actionPayload["operation"] | "setup";
+  for (unsigned attempt = 1; attempt <= REQUEST_ATTEMPTS; ++attempt) {
+    String body;
+    int status = 0;
+    {
+      // A used challenge is never reused, even if its POST receipt was lost.
+      MissionDeviceAuth::clearChallenge();
+      HttpResponse challengeResponse = exchange(challengeUrl, nullptr, 2048, action, operation, attempt);
+      if (!challengeResponse.received || challengeResponse.status != 200) {
+        lastError = challengeResponse.oversized ? "Device challenge too large" :
+          challengeResponse.status <= 0 ? "Server connection failed; scan again near WiFi" :
+          !challengeResponse.received ? "Device challenge interrupted; scan again near WiFi" :
+          "Device challenge failed: HTTP " + String(challengeResponse.status);
+        if (challengeResponse.retryable && attempt < REQUEST_ATTEMPTS) { pauseBeforeRetry(attempt); continue; }
+        return false;
+      }
+      String payload;
+      {
+        DynamicJsonDocument request(4096);
+        {
+          DynamicJsonDocument challenge(2048);
+          if (deserializeJson(challenge, challengeResponse.body) ||
+              String(challenge["type"] | "") != "authChallenge" ||
+              !hexId(challenge["auth"]["nonce"] | "", 48)) {
+            lastError = "Invalid device challenge; scan again";
+            return false;
+          }
+          MissionDeviceAuth::acceptChallenge(challenge.as<JsonVariantConst>());
+          request["challenge_nonce"] = challenge["auth"]["nonce"];
+        }
+        request["mac_address"] = DEVICE_MAC_ADDR;
+        request["serial_number"] = DEVICE_SERIAL_NUM;
+        String firmware = FIRMWARE_VERSION; firmware.trim();
+        request["firmware_version"] = firmware;
+        request["action"] = action;
+        request["payload"].set(actionPayload);
+        bool signedRequest = MissionDeviceAuth::appendProof(request.as<JsonObject>(), DEVICE_MAC_ADDR, DEVICE_SERIAL_NUM, firmware);
+        MissionDeviceAuth::clearChallenge();
+        if (!signedRequest || request.overflowed()) { lastError = "Could not sign device request"; return false; }
+        serializeJson(request, payload);
+      }
+      challengeResponse.body = "";
+      HttpResponse reply = exchange(base + "/action", &payload, MAX_GAME_CONFIG_BYTES + 1024, action, operation, attempt);
+      if (canReplay && reply.retryable && attempt < REQUEST_ATTEMPTS) { pauseBeforeRetry(attempt); continue; }
+      if (!reply.received) {
+        lastError = reply.oversized ? "Server response too large" : "Server response not confirmed; scan again near WiFi";
+        return false;
+      }
+      status = reply.status;
+      body = std::move(reply.body);
+    } // Destroy HTTP/TLS and signing buffers before allocating the JSON pool.
     DynamicJsonDocument result(0);
     DeserializationError jsonError = readConfigurationJson(result, body);
     if (jsonError || result.overflowed()) {
       // Report transport/parser metadata only; never log signed requests or credentials.
-      Serial.printf("[CONFIG] Response parse failed: HTTP=%d bytes=%u error=%s overflow=%s heap=%u largest=%u\n",
+      Serial.printf("[NET] Response parse failed: HTTP=%d bytes=%u error=%s overflow=%s heap=%u largest=%u\n",
                     status, unsigned(body.length()), jsonError.c_str(), result.overflowed() ? "yes" : "no",
                     unsigned(ESP.getFreeHeap()), unsigned(ESP.getMaxAllocHeap()));
-      lastError = String("Setup response: ") + jsonError.c_str() + " (HTTP " + String(status) + ")";
+      lastError = String("Server response: ") + jsonError.c_str() + " (HTTP " + String(status) + ")";
       return false;
     }
     if (status != 200 || !(result["ok"] | false) || !(result["body"]["ok"] | false)) {
       const char* message = result["body"]["message"] | "";
-      if (!message[0]) message = result["message"] | "Game setup request failed";
+      if (!message[0]) message = result["message"] | "Server request failed";
       lastError = message;
       return false;
     }
     serializeJson(result["body"], responseBody);
+    lastError = "";
+    return true;
   }
-  return true;
+  return false;
 }
 
 bool GameConfiguration::download(const String& expectedGame) {

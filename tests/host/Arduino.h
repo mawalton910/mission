@@ -13,6 +13,8 @@ class String : public std::string {
   String(long value) : std::string(std::to_string(value)) {}
   String(unsigned long value) : std::string(std::to_string(value)) {}
   bool isEmpty() const { return empty(); }
+  bool startsWith(const char* prefix) const { return rfind(prefix, 0) == 0; }
+  bool concat(const char* data, size_t size) { append(data, size); return true; }
   using std::string::replace;
   void remove(size_t start) { erase(start); }
   String substring(size_t start, size_t end = std::string::npos) const { return substr(start, end == std::string::npos ? end : end - start); }

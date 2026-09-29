@@ -1,4 +1,4 @@
-# Mission dial setup and offline runs (v26.5.3)
+# Mission dial setup and offline runs (v26.5.4)
 
 Set `DEVICE_GAME_ID` in your ignored `secrets.h`. Assign that provisioned device to an enabled widget in the same game. Wi-Fi, device authentication, TLS, hardware options and privileged control cards remain local.
 
@@ -61,6 +61,14 @@ Hardware references: [M5Stack RFID2](https://docs.m5stack.com/en/unit/rfid2), [M
 - Changed or uncached assignment POI tags are rejected; refresh setup while idle.
 - Remote mode ignores legacy local completion cards and downloads event completion cards from Creator. Admin/reset/OTA/Wi-Fi cards remain local and reserved.
 - No field internet or persistent WebSocket is needed. Boot and checkpoint calls use HMAC challenge-authenticated HTTPS actions `missionGameConfiguration` and `missionCheckpoint`.
+
+### Checkpoint connection failures
+
+`Device challenge failed: -1` on older firmware means the HTTPS connection failed before an HTTP response arrived; it is not a badge or mission rejection. A successful badge download followed by this error means the next connection failed. Wi-Fi association alone does not guarantee the server connection will succeed.
+
+From v26.5.4, transient connection/time-out/gateway failures get up to three attempts, with fresh verified TLS connections and 0.5/1-second pauses. Challenge retries always happen before an action; action retries are limited to setup/catalog reads and mission starts/finishes with durable request/run IDs. Each action retry obtains a new authentication challenge and retains the exact mission payload. Server validation/authentication rejections are not retried automatically. Certificate checks remain enabled.
+
+Look for `[NET]` lines identifying `challenge` or `action`, the operation, attempt, HTTP/stream/TLS error, RSSI, free heap and largest allocation. They contain no signed requests or credentials. If all attempts fail, remain at the connected checkpoint and scan the NPC again. Saved progress and any uncertain final payout remain protected. A weak signal such as -79 dBm warrants retrying closer to the access point; the TLS diagnostic helps distinguish connection trouble from certificate/clock problems.
 
 `REMOTE_GAME_CONFIGURATION = false` retains the explicit legacy path. Relay and safe-crack are separate modes. Do not publish local credentials or device-specific compiled binaries.
 
