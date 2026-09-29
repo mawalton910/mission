@@ -85,6 +85,7 @@ const char* reservedGameTagRole(const String& uid) {
   return nullptr;
 }
 
+#if !REMOTE_GAME_CONFIGURATION
 const char* LOCATION_NAMES[] = {
     "Allens Corner Store",              // 0
     "Grizzly Gas",                      // 1
@@ -112,6 +113,9 @@ const char* LOCATION_NAMES[] = {
     "Laceys Lounge",                    // 23
     "Guru Home"                         // 24 - DEV LOCATION
 };
+#else
+const char* LOCATION_NAMES[] = { "" };
+#endif
 
 // Dev mode flag (global, accessible by missions)
 bool devMode = false;

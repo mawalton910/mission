@@ -9,16 +9,30 @@
 #define private public
 #include "../GameConfiguration.h"
 #include "../CheckpointDial.h"
+#include "../BadgeCatalog.h"
 #undef private
 #include "../GameConfiguration.cpp"
 #include "../CheckpointDial.cpp"
-const char* reservedGameTagRole(const String&) { return nullptr; }
+#include "../BadgeCatalog.cpp"
+const char* reservedGameTagRole(const String& tag) { return tag == "1111AAAA" ? "admin" : nullptr; }
 std::vector<String> calls;
 bool failFinish = false, failStart = false, rejectCrew = false, failReceiptWrite = false;
 std::vector<String> finishCrews;
 const String runId(64, 'a');
+bool failCatalog = false;
+std::vector<String> allowedBadges = {"AABB0000", "AABB0001", "AABB0002", "AABB0003", "AABB0004", "AABB0005", "AABB0006", "AABB0007", "AABB0008", "AABBCCDD", "DEADBEEF"};
 bool GameConfiguration::requestAction(const char*, JsonObjectConst payload, String& response) {
   String operation = payload["operation"] | "";
+  if (operation == "badge_catalog") {
+    if (failCatalog) { lastError = "Test badge catalog outage"; return false; }
+    DynamicJsonDocument page(8192);
+    int offset = payload["offset"] | 0, next = std::min(offset + 256, int(allowedBadges.size()));
+    page["ok"] = true; page["game_id"] = payload["game_id"]; page["revision"] = String(64, 'b');
+    page["offset"] = offset; page["total"] = allowedBadges.size();
+    if (next < int(allowedBadges.size())) page["next_offset"] = next; else page["next_offset"] = nullptr;
+    String tags; for (int i = offset; i < next; ++i) { if (i > offset) tags += "\n"; tags += allowedBadges[i]; }
+    page["uids"] = tags; response.clear(); serializeJson(page, response); return true;
+  }
   calls.push_back(operation);
   if (operation == "finish") { String crew; serializeJson(payload["player_uuids"], crew); finishCrews.push_back(crew); }
   if ((operation == "finish" && failFinish) || (operation == "start" && failStart)) { lastError = "Test network outage"; return false; }
@@ -53,9 +67,14 @@ int main() {
   for (int i = 0; i < 4; ++i) gameConfiguration.pois.push_back({String(24, char('1'+i)), i ? String("Mission stop ")+String(i+1) : String("Armageddon Power Station"), String("ABCD000")+String(i+1)});
   auto online = [](){ return true; }; int disconnects = 0; auto disconnect = [&](){ disconnects++; };
   CheckpointDial dial; dial.begin("111111111111111111111111"); dial.update(); screenshot("badge");
+  dial.tag("AABBCCDD", online, disconnect); assert(dial.saved["roster"].size()==0);
   // The NPC starts immediately, before any player has checked in.
   dial.tag("FAAC1307", online, disconnect); assert(dial.hasUnpaidRun()); assert(calls.size()==1 && calls.back()=="start");
   assert(dial.saved["roster"].size()==0);
+  dial.tag("1111AAAA", online, disconnect); assert(dial.saved["roster"].size()==0);
+  dial.tag("12345678", online, disconnect); assert(dial.saved["roster"].size()==0);
+  gameConfiguration.pois.push_back({String(24,'9'), "Other location", "CCDD1122"});
+  dial.tag("CCDD1122", online, disconnect); assert(dial.saved["roster"].size()==0 && dial.visits()==0);
   dial.tag("AABBCCDD", online, disconnect); assert(dial.saved["roster"].size()==1);
   dial.update(); screenshot("mission");
   dial.tag("ABCD0001", online, disconnect); assert(dial.visits()==1); assert(calls.size()==1);
@@ -107,6 +126,9 @@ int main() {
   reboot.tag("AABBCCDD", online, disconnect);
   assert(reboot.saved["roster"].size()==0 && reboot.saved["last_paid"].isNull());
   assert(String(reboot.saved["request_id"] | "")==pending); // Crew cannot change the shared NPC assignment.
+  failCatalog=true; before=calls.size(); reboot.tag("FAAC1307",online,disconnect);
+  assert(calls.size()==before && badgeCatalog.contains("AABBCCDD"));
+  failCatalog=false;
   failStart=false; reboot.tag("FAAC1307", online, disconnect);
   assert(reboot.hasUnpaidRun() && reboot.saved["roster"].size()==0);
   for (int i=0;i<9;++i) reboot.tag(String("AABB000")+String(i),online,disconnect);
@@ -116,6 +138,11 @@ int main() {
   crewRecovery.tag("AABB0000",online,disconnect); assert(crewRecovery.saved["roster"].size()==7); // Expired/recovered run still allows crew edits.
   crewRecovery.saved["roster_policy"]="starting_crew";
   crewRecovery.tag("AABB0001",online,disconnect); assert(crewRecovery.saved["roster"].size()==7); // Legacy assignment is not silently changed.
+  fakeMillis += 1000; crewRecovery.encoder=0; M5Dial.Encoder.value=2; crewRecovery.page=0; crewRecovery.update(); assert(crewRecovery.page==0);
+  M5Dial.Encoder.value=4; crewRecovery.update(); assert(crewRecovery.page==1);
+  M5Dial.Encoder.value=40; fakeMillis+=10; crewRecovery.update(); assert(crewRecovery.page==1);
+  fakeMillis+=500; crewRecovery.update(); assert(crewRecovery.page==1);
+  M5Dial.Encoder.value=36; crewRecovery.update(); assert(crewRecovery.page==0);
   CheckpointDial different; different.begin("222222222222222222222222"); assert(!different.hasUnpaidRun()); assert(different.saved["roster"].size()==0);
   different.saved["large_reward_fixture"] = String(5000, 'x'); assert(different.persist());
   CheckpointDial large; large.begin("222222222222222222222222"); assert(large.saved["large_reward_fixture"].as<String>().length()==5000);
@@ -125,5 +152,29 @@ int main() {
   CheckpointDial afterFactory; afterFactory.begin("222222222222222222222222");
   assert(afterFactory.storageReady && afterFactory.saved["roster"].size()==0);
   assert(afterFactory.saved["large_reward_fixture"].isNull());
+  assert(!badgeCatalog.ready()); // Factory reset cleared this game's allowlist too.
+  auto originalBadges = allowedBadges;
+  allowedBadges.clear();
+  for (unsigned i=0;i<10000;++i) { char tag[9]; snprintf(tag,sizeof(tag),"%08X",i); allowedBadges.push_back(tag); }
+  assert(badgeCatalog.refresh("111111111111111111111111"));
+  assert(storage.files[BADGE_FILE].size()==110032);
+  assert(badgeCatalog.contains("00000000") && badgeCatalog.contains("0000270F"));
+  assert(!badgeCatalog.contains("00002710"));
+  BadgeCatalog cacheReboot; assert(cacheReboot.load("111111111111111111111111"));
+  assert(cacheReboot.contains("00001234"));
+  assert(!cacheReboot.load("222222222222222222222222") && !cacheReboot.contains("00001234"));
+  storage.rejectWrite=true; assert(!badgeCatalog.refresh("111111111111111111111111")); storage.rejectWrite=false;
+  assert(badgeCatalog.contains("00001234"));
+  allowedBadges=originalBadges;
+  storage.rejectRename=true; assert(!badgeCatalog.refresh("111111111111111111111111")); storage.rejectRename=false;
+  assert(badgeCatalog.contains("00001234"));
+  assert(badgeCatalog.refresh("111111111111111111111111"));
+  assert(badgeCatalog.contains("AABBCCDD") && !badgeCatalog.contains("00001234"));
+  allowedBadges.push_back("AABBCCDD"); assert(!badgeCatalog.refresh("111111111111111111111111"));
+  assert(badgeCatalog.contains("AABBCCDD"));
+  storage.files[BADGE_FILE].back() ^= 1;
+  assert(badgeCatalog.load("111111111111111111111111") && badgeCatalog.contains("00001234"));
+  storage.files[BADGE_BACKUP].back() ^= 1;
+  assert(!badgeCatalog.load("111111111111111111111111") && !badgeCatalog.contains("AABBCCDD"));
   std::cout << "Checkpoint tests passed: NPC-first start, offline crew joins/leaves, final-roster payout, rejected-crew correction, lost-response lock, durable progress, retries, legacy runs, crew limit, power recovery and game isolation.\n";
 }

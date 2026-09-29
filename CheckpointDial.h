@@ -18,7 +18,7 @@ class CheckpointDial {
   bool dirty = true, frozen = false, storageReady = true;
   int page = 0;
   long encoder = 0;
-  unsigned long tick = 0, lastSave = 0, noticeUntil = 0;
+  unsigned long tick = 0, lastSave = 0, noticeUntil = 0, lastScroll = 0;
   String notice, noticeLabel;
   bool persist();
   void show(const String& label, const String& message, unsigned long duration = 4000);
